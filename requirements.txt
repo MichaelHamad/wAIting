@@ -1,0 +1,4 @@
+# No runtime dependencies - stdlib only
+
+# Development dependencies
+pytest>=7.0.0
