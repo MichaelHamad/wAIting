@@ -1,0 +1,133 @@
+Conversation: Understanding CLAUDE.md and Claude Agent SDK
+=========================================================
+
+USER:
+how can I use claude.md to help you? Also I would like to learn more about
+anthrophic sdk for the multistep workflows
+
+---
+
+CLAUDE:
+
+## How CLAUDE.md Helps Me
+
+It's a way to give me persistent context about your project. Every time you
+start a conversation, I read it automatically. Think of it as "onboarding
+notes" for an AI assistant.
+
+**Practical things to include:**
+
+```markdown
+# CLAUDE.md
+
+## Commands
+- `pip install -e .` - Install in dev mode
+- `python -m pytest tests/` - Run tests
+- `python -m waiting <cmd>` - Run the tool
+
+## Architecture
+- PTY wrapper spawns child process via pty.fork()
+- Detector uses state machine (RUNNING/WAITING)
+- Bell + optional desktop notifications
+
+## Conventions
+- No external dependencies (stdlib only)
+- Python 3.10+
+- Use dataclasses for event types
+
+## Current Status
+- [ ] Scaffolding
+- [ ] Core implementation
+- [ ] Tests
+```
+
+This means I won't ask "how do I run tests?" or "what's the structure?" -
+I'll already know.
+
+---
+
+## Claude Agent SDK
+
+The Claude Agent SDK is a framework for building autonomous AI agents and
+multi-step workflows using Claude as the reasoning engine.
+
+### Main Features and Capabilities
+
+1. **Multi-Step Task Execution** - Build workflows where agents can reason
+   through complex problems step-by-step
+2. **Tool Integration** - Connect agents to custom tools and APIs
+3. **Session Management** - Manage agent state across interactions
+4. **MCP Integration** - Use Model Context Protocol to connect external systems
+5. **Multiple Language Support** - Python and TypeScript/Node.js
+
+### Conceptual Example
+
+```python
+from anthropic_sdk import Agent
+
+agent = Agent(
+    name="research-agent",
+    model="claude-opus-4-5",
+    tools=[search_tool, database_tool, email_tool]
+)
+
+# Agent autonomously figures out the steps
+result = agent.run("Research market trends and email me a summary")
+```
+
+The agent would:
+1. Search for market data
+2. Query relevant databases
+3. Synthesize findings
+4. Compose and send the email
+
+All without you coding each step explicitly.
+
+### Where to Learn More
+- https://docs.anthropic.com - Main documentation
+- Look for "Agent SDK" section for Python/TypeScript guides
+
+---
+
+USER:
+so the agents.md would only be used for something like those example use
+cases? not something like an agent in our internal project would use
+
+---
+
+CLAUDE:
+
+## "Agent" Has Two Meanings
+
+| Term                              | What It Is                                      |
+|-----------------------------------|------------------------------------------------|
+| **AI Agent** (Claude Agent SDK)   | Uses an LLM to *reason* and *decide* next steps|
+| **Software Agent/Daemon**         | Any autonomous program that runs and does task |
+
+## Your "waiting" Tool
+
+It's a **software agent** in the traditional sense - it runs, monitors, and
+takes action (alerts). But it:
+- Has **hardcoded logic** (state machine, heuristics)
+- **No AI involved** - pure deterministic code
+- Doesn't need Claude to "think" about what to do
+
+**Claude Agent SDK is irrelevant here.**
+
+## When You'd Use Claude Agent SDK
+
+If your tool needed to **make judgment calls**, like:
+- "Is this output *actually* a prompt or just slow processing?"
+- "Should I escalate this notification based on context?"
+- "Summarize what the command was doing when it stalled"
+
+Then you'd pipe data to Claude and let it reason. But that's overkill for
+your use case - simple heuristics (raw mode + prompt patterns) are more
+efficient and don't require API calls.
+
+## TL;DR
+
+Your `waiting` tool = traditional systems programming, no AI needed.
+
+Claude Agent SDK = for when you want AI to autonomously figure out *how*
+to accomplish a goal.
