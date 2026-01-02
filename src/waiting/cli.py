@@ -335,8 +335,20 @@ def setup_hooks(
         "hooks": [stop_config.copy()]
     })
 
-    # Clean up old PreToolUse/PostToolUse hooks from previous versions
-    for old_hook_type in ["PreToolUse", "PostToolUse"]:
+    # PreToolUse - record activity when user approves a tool (always enabled)
+    if "PreToolUse" not in settings["hooks"]:
+        settings["hooks"]["PreToolUse"] = []
+    settings["hooks"]["PreToolUse"] = [
+        h for h in settings["hooks"]["PreToolUse"]
+        if not _is_waiting_hook(h)
+    ]
+    settings["hooks"]["PreToolUse"].append({
+        "matcher": "",
+        "hooks": [stop_config.copy()]
+    })
+
+    # Clean up old PostToolUse hooks from previous versions
+    for old_hook_type in ["PostToolUse"]:
         if old_hook_type in settings["hooks"]:
             settings["hooks"][old_hook_type] = [
                 h for h in settings["hooks"][old_hook_type]
