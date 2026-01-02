@@ -13,6 +13,8 @@ DEFAULT_CONFIG = {
     "audio": "default",  # "default" = bundled bell.wav, or path to custom .wav
     "interval": 30,
     "max_nags": 0,
+    # Which hooks are enabled (stop, permission, idle)
+    "enabled_hooks": ["stop", "permission", "idle"],
     # Per-hook grace periods (seconds of inactivity before bell plays)
     "grace_period_stop": 300,         # 5 min - after Claude finishes responding
     "grace_period_permission": 10,    # 10s - when permission dialog shown
@@ -249,7 +251,8 @@ def setup_hooks(
     stop_script_path: Path,
     permission_script_path: Path,
     idle_script_path: Path,
-    user_stop_script: Path
+    user_stop_script: Path,
+    enabled_hooks: list[str]
 ) -> None:
     """Add notification hooks to Claude settings with per-hook scripts."""
     settings = load_claude_settings()
@@ -270,14 +273,17 @@ def setup_hooks(
         h for h in settings["hooks"]["PermissionRequest"]
         if not _is_waiting_hook(h)
     ]
-    settings["hooks"]["PermissionRequest"].append({
-        "matcher": "",
-        "hooks": [{
-            "type": "command",
-            "command": str(permission_script_path),
-            "timeout": 10
-        }]
-    })
+    if "permission" in enabled_hooks:
+        settings["hooks"]["PermissionRequest"].append({
+            "matcher": "",
+            "hooks": [{
+                "type": "command",
+                "command": str(permission_script_path),
+                "timeout": 10
+            }]
+        })
+    if not settings["hooks"]["PermissionRequest"]:
+        del settings["hooks"]["PermissionRequest"]
 
     # Stop - fires when Claude finishes responding
     if "Stop" not in settings["hooks"]:
@@ -286,14 +292,17 @@ def setup_hooks(
         h for h in settings["hooks"]["Stop"]
         if not _is_waiting_hook(h)
     ]
-    settings["hooks"]["Stop"].append({
-        "matcher": "",
-        "hooks": [{
-            "type": "command",
-            "command": str(stop_script_path),
-            "timeout": 10
-        }]
-    })
+    if "stop" in enabled_hooks:
+        settings["hooks"]["Stop"].append({
+            "matcher": "",
+            "hooks": [{
+                "type": "command",
+                "command": str(stop_script_path),
+                "timeout": 10
+            }]
+        })
+    if not settings["hooks"]["Stop"]:
+        del settings["hooks"]["Stop"]
 
     # Notification with idle_prompt - backup for long waits
     if "Notification" not in settings["hooks"]:
@@ -302,16 +311,19 @@ def setup_hooks(
         h for h in settings["hooks"]["Notification"]
         if not _is_waiting_hook(h)
     ]
-    settings["hooks"]["Notification"].append({
-        "matcher": "idle_prompt",
-        "hooks": [{
-            "type": "command",
-            "command": str(idle_script_path),
-            "timeout": 10
-        }]
-    })
+    if "idle" in enabled_hooks:
+        settings["hooks"]["Notification"].append({
+            "matcher": "idle_prompt",
+            "hooks": [{
+                "type": "command",
+                "command": str(idle_script_path),
+                "timeout": 10
+            }]
+        })
+    if not settings["hooks"]["Notification"]:
+        del settings["hooks"]["Notification"]
 
-    # Stop nagging when user submits a prompt
+    # Stop nagging when user submits a prompt (always enabled)
     if "UserPromptSubmit" not in settings["hooks"]:
         settings["hooks"]["UserPromptSubmit"] = []
     settings["hooks"]["UserPromptSubmit"] = [
@@ -389,6 +401,9 @@ def cli(ctx, audio: str | None, interval: int | None, max_nags: int | None):
         grace_permission = config.get("grace_period_permission", DEFAULT_CONFIG["grace_period_permission"])
         grace_idle = config.get("grace_period_idle", DEFAULT_CONFIG["grace_period_idle"])
 
+        # Enabled hooks
+        enabled_hooks = config.get("enabled_hooks", DEFAULT_CONFIG["enabled_hooks"])
+
         # Resolve audio path
         if audio is None or audio == "default":
             audio_path = get_default_audio()
@@ -402,10 +417,14 @@ def cli(ctx, audio: str | None, interval: int | None, max_nags: int | None):
         click.echo(f"  Audio: {audio_path}")
         click.echo(f"  Interval: {interval}s" + (" (no repeat)" if interval == 0 else ""))
         click.echo(f"  Max nags: {max_nags if max_nags > 0 else 'unlimited'}")
+        click.echo(f"  Enabled hooks: {', '.join(enabled_hooks)}")
         click.echo(f"  Grace periods:")
-        click.echo(f"    Stop hook: {grace_stop}s ({grace_stop // 60}min)")
-        click.echo(f"    Permission hook: {grace_permission}s")
-        click.echo(f"    Idle hook: {grace_idle}s")
+        if "stop" in enabled_hooks:
+            click.echo(f"    Stop hook: {grace_stop}s ({grace_stop // 60}min)")
+        if "permission" in enabled_hooks:
+            click.echo(f"    Permission hook: {grace_permission}s")
+        if "idle" in enabled_hooks:
+            click.echo(f"    Idle hook: {grace_idle}s")
 
         # Create per-hook notify scripts
         stop_script = create_notify_script(audio_path, interval, max_nags, grace_stop, "stop")
@@ -418,15 +437,19 @@ def cli(ctx, audio: str | None, interval: int | None, max_nags: int | None):
         click.echo(f"  Scripts: {get_hooks_dir()}")
 
         # Add hooks to Claude settings
-        setup_hooks(stop_script, permission_script, idle_script, user_stop_script)
+        setup_hooks(stop_script, permission_script, idle_script, user_stop_script, enabled_hooks)
         click.echo(f"  Hooks: {get_claude_settings_path()}")
 
         click.echo()
         click.echo("Done! Claude Code will nag you when waiting for input.")
         click.echo()
         click.echo("Behavior:")
-        click.echo(f"  - Stop hook: alerts after {grace_stop}s ({grace_stop // 60}min) of inactivity")
-        click.echo(f"  - Permission hook: alerts after {grace_permission}s of inactivity")
+        if "stop" in enabled_hooks:
+            click.echo(f"  - Stop hook: alerts after {grace_stop}s ({grace_stop // 60}min) of inactivity")
+        if "permission" in enabled_hooks:
+            click.echo(f"  - Permission hook: alerts after {grace_permission}s of inactivity")
+        if "idle" in enabled_hooks:
+            click.echo(f"  - Idle hook: alerts after 60s idle (built-in)")
         click.echo("  - Plays sound when Claude needs input")
         if interval > 0:
             click.echo(f"  - Repeats every {interval}s until you respond")
@@ -525,53 +548,61 @@ def _kill_nag_process() -> bool:
 def status():
     """Show current waiting configuration."""
     settings = load_claude_settings()
-    script_path = get_hooks_dir() / "waiting-notify.sh"
+    config = load_config()
 
-    # Check if any waiting hook is configured (current: Stop, Notification; legacy: PermissionRequest)
-    hook_found = False
+    # Check which hooks are currently registered
+    active_hooks = []
     if "hooks" in settings:
-        for hook_type in ["Stop", "Notification", "PermissionRequest"]:
-            if hook_type in settings["hooks"]:
-                for h in settings["hooks"][hook_type]:
-                    if _is_waiting_hook(h):
-                        hook_found = True
-                        break
-            if hook_found:
-                break
+        if "Stop" in settings["hooks"]:
+            for h in settings["hooks"]["Stop"]:
+                if _is_waiting_hook(h):
+                    active_hooks.append("stop")
+                    break
+        if "PermissionRequest" in settings["hooks"]:
+            for h in settings["hooks"]["PermissionRequest"]:
+                if _is_waiting_hook(h):
+                    active_hooks.append("permission")
+                    break
+        if "Notification" in settings["hooks"]:
+            for h in settings["hooks"]["Notification"]:
+                if _is_waiting_hook(h):
+                    active_hooks.append("idle")
+                    break
 
-    if hook_found and script_path.exists():
+    if active_hooks:
         click.echo("Status: ENABLED")
-        click.echo(f"  Script: {script_path}")
+        click.echo(f"  Active hooks: {', '.join(active_hooks)}")
+        click.echo(f"  Scripts: {get_hooks_dir()}")
 
-        # Parse config from script
-        audio = None
-        interval = None
-        max_nags = None
-        grace_period = None
-        with open(script_path) as f:
-            for line in f:
-                if line.startswith("# Audio file:"):
-                    audio = line.split(":", 1)[1].strip()
-                elif line.startswith("INTERVAL="):
-                    interval = line.split("=", 1)[1].strip()
-                elif line.startswith("MAX_NAGS="):
-                    max_nags = line.split("=", 1)[1].strip()
-                elif line.startswith("GRACE_PERIOD="):
-                    grace_period = line.split("=", 1)[1].strip()
+        # Show config
+        click.echo()
+        click.echo("Configuration:")
+        audio = config.get('audio', 'default')
+        if audio == 'default':
+            audio = get_default_audio()
+        click.echo(f"  Audio: {audio}")
+        click.echo(f"  Interval: {config.get('interval', DEFAULT_CONFIG['interval'])}s")
+        max_nags = config.get('max_nags', DEFAULT_CONFIG['max_nags'])
+        click.echo(f"  Max nags: {'unlimited' if max_nags == 0 else max_nags}")
 
-        if audio:
-            click.echo(f"  Audio: {audio}")
-        if grace_period:
-            click.echo(f"  Grace period: {grace_period}s" + (" (disabled)" if grace_period == "0" else ""))
-        if interval:
-            click.echo(f"  Interval: {interval}s" + (" (no repeat)" if interval == "0" else ""))
-        if max_nags:
-            click.echo(f"  Max nags: {'unlimited' if max_nags == '0' else max_nags}")
+        click.echo()
+        click.echo("Grace periods:")
+        if "stop" in active_hooks:
+            gs = config.get('grace_period_stop', DEFAULT_CONFIG['grace_period_stop'])
+            click.echo(f"  Stop: {gs}s ({gs // 60}min)")
+        if "permission" in active_hooks:
+            gp = config.get('grace_period_permission', DEFAULT_CONFIG['grace_period_permission'])
+            click.echo(f"  Permission: {gp}s")
+        if "idle" in active_hooks:
+            gi = config.get('grace_period_idle', DEFAULT_CONFIG['grace_period_idle'])
+            click.echo(f"  Idle: {gi}s (+ 60s built-in)")
 
         # Check if currently nagging
-        pid_file = Path("/tmp/waiting-nag.pid")
-        if pid_file.exists():
-            click.echo(f"  Currently: NAGGING (pid file exists)")
+        tmp_dir = Path("/tmp")
+        nag_pids = list(tmp_dir.glob("waiting-nag-*.pid"))
+        if nag_pids:
+            click.echo()
+            click.echo(f"  Currently: NAGGING ({len(nag_pids)} session(s))")
     else:
         click.echo("Status: DISABLED")
         click.echo()
@@ -585,6 +616,9 @@ def status():
 @click.option("--grace-stop", type=int, help="Grace period for Stop hook (seconds)")
 @click.option("--grace-permission", type=int, help="Grace period for Permission hook (seconds)")
 @click.option("--grace-idle", type=int, help="Grace period for Idle hook (seconds)")
+@click.option("--enable-hook", type=click.Choice(["stop", "permission", "idle"]), help="Enable a hook")
+@click.option("--disable-hook", type=click.Choice(["stop", "permission", "idle"]), help="Disable a hook")
+@click.option("--hooks", type=str, help="Set enabled hooks (comma-separated: stop,permission,idle)")
 @click.option("--show", is_flag=True, help="Show current config without modifying")
 @click.option("--reset", is_flag=True, help="Reset to default configuration")
 def configure(
@@ -594,6 +628,9 @@ def configure(
     grace_stop: int | None,
     grace_permission: int | None,
     grace_idle: int | None,
+    enable_hook: str | None,
+    disable_hook: str | None,
+    hooks: str | None,
     show: bool,
     reset: bool
 ):
@@ -602,6 +639,8 @@ def configure(
     Examples:
         waiting configure --grace-stop 300 --grace-permission 10
         waiting configure --audio /path/to/sound.wav
+        waiting configure --disable-hook idle
+        waiting configure --hooks stop,permission
         waiting configure --show
         waiting configure --reset
     """
@@ -614,7 +653,7 @@ def configure(
         click.echo()
         show = True  # Show defaults after reset
 
-    has_changes = any([audio, interval, max_nags, grace_stop, grace_permission, grace_idle])
+    has_changes = any([audio, interval, max_nags, grace_stop, grace_permission, grace_idle, enable_hook, disable_hook, hooks])
     if show or not has_changes:
         config = load_config()
         click.echo(f"Config: {config_path}")
@@ -629,6 +668,9 @@ def configure(
         click.echo(f"  interval:          {config.get('interval', DEFAULT_CONFIG['interval'])}s")
         max_nags_val = config.get('max_nags', DEFAULT_CONFIG['max_nags'])
         click.echo(f"  max_nags:          {max_nags_val if max_nags_val > 0 else 'unlimited'}")
+        click.echo()
+        enabled = config.get('enabled_hooks', DEFAULT_CONFIG['enabled_hooks'])
+        click.echo(f"Enabled hooks: {', '.join(enabled)}")
         click.echo()
         click.echo("Grace periods (seconds of inactivity before bell):")
         gs = config.get('grace_period_stop', DEFAULT_CONFIG['grace_period_stop'])
@@ -662,6 +704,17 @@ def configure(
     if grace_idle is not None:
         config["grace_period_idle"] = grace_idle
 
+    # Handle hook enable/disable
+    enabled_hooks = config.get("enabled_hooks", DEFAULT_CONFIG["enabled_hooks"]).copy()
+    if hooks is not None:
+        # Set exact list
+        enabled_hooks = [h.strip() for h in hooks.split(",") if h.strip() in ["stop", "permission", "idle"]]
+    if enable_hook is not None and enable_hook not in enabled_hooks:
+        enabled_hooks.append(enable_hook)
+    if disable_hook is not None and disable_hook in enabled_hooks:
+        enabled_hooks.remove(disable_hook)
+    config["enabled_hooks"] = enabled_hooks
+
     save_config(config)
     click.echo(f"Config saved to: {config_path}")
     click.echo()
@@ -673,6 +726,8 @@ def configure(
     click.echo(f"  interval:          {config.get('interval', DEFAULT_CONFIG['interval'])}s")
     max_nags_val = config.get('max_nags', DEFAULT_CONFIG['max_nags'])
     click.echo(f"  max_nags:          {max_nags_val if max_nags_val > 0 else 'unlimited'}")
+    click.echo()
+    click.echo(f"Enabled hooks: {', '.join(config['enabled_hooks'])}")
     click.echo()
     click.echo("Grace periods:")
     gs = config.get('grace_period_stop', DEFAULT_CONFIG['grace_period_stop'])
