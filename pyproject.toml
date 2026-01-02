@@ -1,35 +1,22 @@
 [build-system]
-requires = ["setuptools>=61.0"]
-build-backend = "setuptools.build_meta"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
 [project]
 name = "waiting"
 version = "0.1.0"
-description = "CLI utility that detects when commands are waiting for user input"
-readme = "PLAN.md"
-requires-python = ">=3.10"
-license = {text = "MIT"}
-authors = [
-    {name = "Michael Hamad"}
-]
-classifiers = [
-    "Development Status :: 3 - Alpha",
-    "Environment :: Console",
-    "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
-    "Operating System :: POSIX",
-    "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
-    "Programming Language :: Python :: 3.11",
-    "Programming Language :: Python :: 3.12",
-    "Topic :: Utilities",
+description = "Notify when your AI coding assistant is waiting for input"
+requires-python = ">=3.9"
+dependencies = [
+    "click>=8.0.0",
 ]
 
 [project.scripts]
-waiting = "waiting.cli:main"
+waiting = "waiting.cli:cli"
 
-[project.optional-dependencies]
-dev = ["pytest"]
+[tool.hatch.build.targets.wheel]
+packages = ["src/waiting"]
+artifacts = ["src/waiting/*.wav"]
 
-[tool.setuptools.packages.find]
-where = ["."]
+[tool.hatch.build.targets.sdist]
+include = ["src/waiting/*.wav"]

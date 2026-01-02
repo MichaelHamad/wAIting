@@ -1,127 +1,127 @@
 # waiting
 
-**Never miss a prompt again.** A CLI wrapper that rings a bell when your command needs input.
+Get notified when Claude Code needs your input.
 
-## The Problem
+Stop tabbing back to find Claude has been waiting for you for 10 minutes.
 
-You run a command, switch to another window, and come back 20 minutes later to find:
-
-```
-Building project...
-Compiling assets...
-Installing dependencies...
-Enter password: █   <-- Been sitting here for 15 minutes
-```
-
-## The Solution
-
-Wrap your command with `waiting`:
+## Install
 
 ```bash
-waiting ./build.sh
+pip install waiting
 ```
-
-Now you'll hear a bell the moment it asks for input - even if you're in another window.
 
 ## Quick Start
 
 ```bash
-git clone https://github.com/yourusername/waiting.git
-cd waiting
-pip install .
+waiting          # Enable notifications
+waiting status   # Check if enabled
+waiting disable  # Turn off
 ```
 
-Then wrap any command:
-
-```bash
-waiting <your-command>
-```
-
-## Examples
-
-```bash
-# AI assistants - get alerted when they need your response
-waiting claude
-
-# Package managers - catch those license/config prompts
-waiting npm install
-waiting pip install -e .
-
-# Git operations - know when the editor opens or auth is needed
-waiting git commit
-waiting git push
-
-# System commands - never miss sudo prompts
-waiting sudo apt update
-
-# Interactive REPLs - bell at each prompt
-waiting python3
-waiting node
-
-# Build scripts - catch any interactive prompts
-waiting make install
-waiting ./configure
-```
+That's it. You'll hear a sound when Claude Code needs your attention.
 
 ## How It Works
 
 ```
-┌─────────────────────────────────────────────────────┐
-│  $ waiting ./my-script.sh                           │
-├─────────────────────────────────────────────────────┤
-│                                                     │
-│  waiting wraps your command in a PTY (pseudo-       │
-│  terminal) and monitors for input prompts:          │
-│                                                     │
-│  1. Raw mode detection (single keypress input)      │
-│  2. Prompt patterns (?, :, >, [Y/n], password, etc) │
-│                                                     │
-│  When detected → Terminal bell rings (🔔)           │
-│                                                     │
-│  Your command runs EXACTLY as normal:               │
-│  ✓ Same colors                                      │
-│  ✓ Same interactivity                               │
-│  ✓ Same exit code                                   │
-│  ✓ Ctrl+C works                                     │
-│  ✓ Arrow keys work                                  │
-│                                                     │
-└─────────────────────────────────────────────────────┘
+Claude needs permission (tool use, question, etc.)
+        ↓
+PermissionRequest hook fires
+        ↓
+Grace period check: responded recently?
+        ↓
+YES → Skip immediate sound, start nag loop
+NO  → Play sound immediately, start nag loop
+        ↓
+Nag every 15s until you respond
+        ↓
+You respond → PreToolUse fires → nag stops
+```
+
+## Configuration
+
+Settings are stored in `~/.waiting.json`:
+
+```json
+{
+  "audio": "default",
+  "grace_period": 60,
+  "interval": 15,
+  "max_nags": 0
+}
+```
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `audio` | `"default"` | Sound file path, or `"default"` for bundled bell |
+| `grace_period` | `60` | Seconds after responding to suppress immediate alert |
+| `interval` | `15` | Seconds between repeated nags (0 = no repeat) |
+| `max_nags` | `0` | Max repeat alerts (0 = unlimited) |
+
+### Configure via CLI
+
+```bash
+waiting configure                     # View current settings
+waiting configure --interval 30       # Change nag interval
+waiting configure --grace-period 30   # Change grace period
+waiting configure --audio /path/to/sound.wav  # Custom sound
+waiting configure --reset             # Reset to defaults
+```
+
+### Custom Config Location
+
+Override with environment variable:
+
+```bash
+export WAITING_CONFIG=~/myconfig/waiting.json
+```
+
+## Commands
+
+```bash
+waiting                  # Enable with current config
+waiting status           # Show status and settings
+waiting kill             # Stop current nag loop (keeps hooks enabled)
+waiting disable          # Disable notifications completely
+waiting configure        # View/modify settings
+waiting --help           # Show all options
+```
+
+### One-off Overrides
+
+```bash
+waiting --interval 10              # Override interval for this run
+waiting --grace-period 0           # Disable grace period for this run
+waiting --audio /path/to/bell.wav  # Use different sound for this run
 ```
 
 ## Requirements
 
-- Python 3.10+
-- Unix-like OS (macOS, Linux)
-- Terminal with bell support (most terminals)
+- Python 3.9+
+- Claude Code CLI
+- Audio player (auto-detected):
+  - Linux: `aplay`, `paplay`, or `pw-play`
+  - macOS: `afplay`
+  - WSL: `powershell.exe` (plays via Windows)
 
-## Verify Bell Works
-
-Test that your terminal can play the bell sound:
-
-```bash
-printf '\a'
-```
-
-If you don't hear anything, check your terminal settings:
-- **macOS Terminal**: Settings → Profiles → Advanced → Audible bell
-- **iTerm2**: Settings → Profiles → Terminal → Notifications → Enable bell
-- **VS Code**: Check system sound is on
-
-## Install Options
+## Uninstall
 
 ```bash
-# Standard install
-pip install .
-
-# Development install (includes pytest)
-pip install -e ".[dev]"
-
-# Using Make
-make install      # Standard
-make dev          # Development
-make test         # Run tests
+waiting disable
+pip uninstall waiting
+rm ~/.waiting.json  # optional: remove config
 ```
 
-## License
+## Troubleshooting
 
-MIT
+**No sound playing?**
+- Check audio player: `aplay /path/to/sound.wav`
+- WSL users: ensure PulseAudio or use PowerShell fallback
+
+**Too many notifications?**
+- Increase grace period: `waiting configure --grace-period 120`
+- Increase interval: `waiting configure --interval 60`
+
+**Not getting notifications?**
+- Check status: `waiting status`
+- Re-enable: `waiting`
+- Check hooks: `cat ~/.claude/settings.json | grep -A 20 hooks`
