@@ -13,7 +13,10 @@ DEFAULT_CONFIG = {
     "audio": "default",  # "default" = bundled bell.wav, or path to custom .wav
     "interval": 30,
     "max_nags": 0,
-    "grace_period": 60,
+    # Per-hook grace periods (seconds of inactivity before bell plays)
+    "grace_period_stop": 300,         # 5 min - after Claude finishes responding
+    "grace_period_permission": 10,    # 10s - when permission dialog shown
+    "grace_period_idle": 0,           # 0 - idle_prompt already has 60s delay built in
 }
 
 
@@ -84,40 +87,58 @@ def save_claude_settings(settings: dict) -> None:
         json.dump(settings, f, indent=2)
 
 
-def create_notify_script(audio_path: str, interval: int = 30, max_nags: int = 0, grace_period: int = 60) -> Path:
-    """Create the notification shell script.
+def create_notify_script(
+    audio_path: str,
+    interval: int = 30,
+    max_nags: int = 0,
+    grace_period: int = 60,
+    hook_type: str = "default"
+) -> Path:
+    """Create the notification shell script for a specific hook type.
 
     Args:
         audio_path: Path to the audio file
         interval: Seconds between repeated notifications (0 = no repeat)
         max_nags: Maximum number of repeats (0 = unlimited)
         grace_period: Seconds after user activity to suppress notifications (0 = no grace)
+        hook_type: The hook type (stop, permission, idle, default)
     """
-    script_path = get_hooks_dir() / "waiting-notify.sh"
+    script_name = f"waiting-notify-{hook_type}.sh" if hook_type != "default" else "waiting-notify.sh"
+    script_path = get_hooks_dir() / script_name
 
     script_content = f"""#!/bin/bash
 # Waiting - Nag user until they respond to Claude Code
 # Audio file: {audio_path}
 
-PID_FILE="/tmp/waiting-nag.pid"
-ACTIVITY_FILE="/tmp/waiting-last-activity"
 INTERVAL={interval}
 MAX_NAGS={max_nags}
 GRACE_PERIOD={grace_period}
 
+# Read hook context from stdin to get session ID
+HOOK_INPUT=$(cat)
+SESSION_ID=$(echo "$HOOK_INPUT" | grep -o '"session_id":"[^"]*"' | cut -d'"' -f4)
+
+# Fall back to a hash of the input if no session_id found
+if [ -z "$SESSION_ID" ]; then
+    SESSION_ID=$(echo "$HOOK_INPUT" | md5sum | cut -c1-8)
+fi
+
+# Use session-specific files
+PID_FILE="/tmp/waiting-nag-$SESSION_ID.pid"
+ACTIVITY_FILE="/tmp/waiting-activity-$SESSION_ID"
+
 # Check if user was recently active (within grace period)
-SKIP_IMMEDIATE=0
 if [ "$GRACE_PERIOD" -gt 0 ] && [ -f "$ACTIVITY_FILE" ]; then
     last_activity=$(cat "$ACTIVITY_FILE" 2>/dev/null || echo 0)
     now=$(date +%s)
     elapsed=$((now - last_activity))
     if [ "$elapsed" -lt "$GRACE_PERIOD" ]; then
-        # User was active recently, skip immediate sound but still start nag loop
-        SKIP_IMMEDIATE=1
+        # User was active recently, skip everything - don't annoy them
+        exit 0
     fi
 fi
 
-# Kill any existing nag process
+# Kill any existing nag process for THIS session
 if [ -f "$PID_FILE" ]; then
     old_pid=$(cat "$PID_FILE" 2>/dev/null)
     if [ -n "$old_pid" ]; then
@@ -146,10 +167,8 @@ play_sound() {{
     fi
 }}
 
-# Play immediately (unless within grace period)
-if [ "$SKIP_IMMEDIATE" -eq 0 ]; then
-    play_sound
-fi
+# Play immediately
+play_sound
 
 # If interval is 0, just play once and exit (but only if we played)
 if [ "$INTERVAL" -eq 0 ]; then
@@ -183,13 +202,24 @@ echo $! > "$PID_FILE"
     stop_script_path = get_hooks_dir() / "waiting-stop.sh"
     stop_content = """#!/bin/bash
 # Stop the waiting nag loop and record user activity
-PID_FILE="/tmp/waiting-nag.pid"
-ACTIVITY_FILE="/tmp/waiting-last-activity"
+
+# Read hook context from stdin to get session ID
+HOOK_INPUT=$(cat)
+SESSION_ID=$(echo "$HOOK_INPUT" | grep -o '"session_id":"[^"]*"' | cut -d'"' -f4)
+
+# Fall back to a hash of the input if no session_id found
+if [ -z "$SESSION_ID" ]; then
+    SESSION_ID=$(echo "$HOOK_INPUT" | md5sum | cut -c1-8)
+fi
+
+# Use session-specific files
+PID_FILE="/tmp/waiting-nag-$SESSION_ID.pid"
+ACTIVITY_FILE="/tmp/waiting-activity-$SESSION_ID"
 
 # Record that user was just active
 date +%s > "$ACTIVITY_FILE"
 
-# Kill the nag loop if running
+# Kill the nag loop if running for THIS session
 if [ -f "$PID_FILE" ]; then
     pid=$(cat "$PID_FILE" 2>/dev/null)
     if [ -n "$pid" ]; then
@@ -215,28 +245,25 @@ def _is_waiting_hook(hook_config: dict) -> bool:
     return False
 
 
-def setup_hook(script_path: Path) -> None:
-    """Add notification hooks to Claude settings for immediate alerts."""
+def setup_hooks(
+    stop_script_path: Path,
+    permission_script_path: Path,
+    idle_script_path: Path,
+    user_stop_script: Path
+) -> None:
+    """Add notification hooks to Claude settings with per-hook scripts."""
     settings = load_claude_settings()
-    stop_script = script_path.parent / "waiting-stop.sh"
 
     if "hooks" not in settings:
         settings["hooks"] = {}
 
-    notify_config = {
-        "type": "command",
-        "command": str(script_path),
-        "timeout": 10
-    }
-
     stop_config = {
         "type": "command",
-        "command": str(stop_script),
+        "command": str(user_stop_script),
         "timeout": 5
     }
 
-    # Set up PermissionRequest hook (fires for all input-blocking scenarios)
-    # This covers: tool permissions, AskUserQuestion, and other user prompts
+    # PermissionRequest - fires when Claude shows a permission dialog
     if "PermissionRequest" not in settings["hooks"]:
         settings["hooks"]["PermissionRequest"] = []
     settings["hooks"]["PermissionRequest"] = [
@@ -245,42 +272,66 @@ def setup_hook(script_path: Path) -> None:
     ]
     settings["hooks"]["PermissionRequest"].append({
         "matcher": "",
-        "hooks": [notify_config.copy()]
+        "hooks": [{
+            "type": "command",
+            "command": str(permission_script_path),
+            "timeout": 10
+        }]
     })
 
-    # Set up PreToolUse hook to stop nagging immediately when user approves
-    # (fires before tool runs, so nag stops right away)
-    if "PreToolUse" not in settings["hooks"]:
-        settings["hooks"]["PreToolUse"] = []
-    settings["hooks"]["PreToolUse"] = [
-        h for h in settings["hooks"]["PreToolUse"]
+    # Stop - fires when Claude finishes responding
+    if "Stop" not in settings["hooks"]:
+        settings["hooks"]["Stop"] = []
+    settings["hooks"]["Stop"] = [
+        h for h in settings["hooks"]["Stop"]
         if not _is_waiting_hook(h)
     ]
-    settings["hooks"]["PreToolUse"].append({
+    settings["hooks"]["Stop"].append({
+        "matcher": "",
+        "hooks": [{
+            "type": "command",
+            "command": str(stop_script_path),
+            "timeout": 10
+        }]
+    })
+
+    # Notification with idle_prompt - backup for long waits
+    if "Notification" not in settings["hooks"]:
+        settings["hooks"]["Notification"] = []
+    settings["hooks"]["Notification"] = [
+        h for h in settings["hooks"]["Notification"]
+        if not _is_waiting_hook(h)
+    ]
+    settings["hooks"]["Notification"].append({
+        "matcher": "idle_prompt",
+        "hooks": [{
+            "type": "command",
+            "command": str(idle_script_path),
+            "timeout": 10
+        }]
+    })
+
+    # Stop nagging when user submits a prompt
+    if "UserPromptSubmit" not in settings["hooks"]:
+        settings["hooks"]["UserPromptSubmit"] = []
+    settings["hooks"]["UserPromptSubmit"] = [
+        h for h in settings["hooks"]["UserPromptSubmit"]
+        if not _is_waiting_hook(h)
+    ]
+    settings["hooks"]["UserPromptSubmit"].append({
         "matcher": "",
         "hooks": [stop_config.copy()]
     })
 
-    # Also keep PostToolUse as backup (in case PreToolUse doesn't fire)
-    if "PostToolUse" not in settings["hooks"]:
-        settings["hooks"]["PostToolUse"] = []
-    settings["hooks"]["PostToolUse"] = [
-        h for h in settings["hooks"]["PostToolUse"]
-        if not _is_waiting_hook(h)
-    ]
-    settings["hooks"]["PostToolUse"].append({
-        "matcher": "",
-        "hooks": [stop_config.copy()]
-    })
-
-    # Clean up old Notification hooks from previous versions
-    if "Notification" in settings["hooks"]:
-        settings["hooks"]["Notification"] = [
-            h for h in settings["hooks"]["Notification"]
-            if not _is_waiting_hook(h)
-        ]
-        if not settings["hooks"]["Notification"]:
-            del settings["hooks"]["Notification"]
+    # Clean up old PreToolUse/PostToolUse hooks from previous versions
+    for old_hook_type in ["PreToolUse", "PostToolUse"]:
+        if old_hook_type in settings["hooks"]:
+            settings["hooks"][old_hook_type] = [
+                h for h in settings["hooks"][old_hook_type]
+                if not _is_waiting_hook(h)
+            ]
+            if not settings["hooks"][old_hook_type]:
+                del settings["hooks"][old_hook_type]
 
     save_claude_settings(settings)
 
@@ -292,8 +343,8 @@ def remove_hook() -> None:
     if "hooks" not in settings:
         return
 
-    # Remove from all hook types we use
-    for hook_type in ["PermissionRequest", "PreToolUse", "PostToolUse", "Notification"]:
+    # Remove from all hook types we use (current and legacy)
+    for hook_type in ["Stop", "Notification", "UserPromptSubmit", "PermissionRequest", "PreToolUse", "PostToolUse"]:
         if hook_type in settings["hooks"]:
             settings["hooks"][hook_type] = [
                 h for h in settings["hooks"][hook_type]
@@ -314,9 +365,8 @@ def remove_hook() -> None:
 @click.option("--audio", type=click.Path(exists=True), help="Custom audio file path")
 @click.option("--interval", type=int, default=None, help="Seconds between nags (0 = no repeat)")
 @click.option("--max-nags", type=int, default=None, help="Max repeats (0 = unlimited)")
-@click.option("--grace-period", type=int, default=None, help="Seconds after activity to suppress notifications (0 = no grace)")
 @click.pass_context
-def cli(ctx, audio: str | None, interval: int | None, max_nags: int | None, grace_period: int | None):
+def cli(ctx, audio: str | None, interval: int | None, max_nags: int | None):
     """Waiting - Nag you until you respond to Claude Code.
 
     Run without arguments to enable with defaults from config file.
@@ -333,8 +383,11 @@ def cli(ctx, audio: str | None, interval: int | None, max_nags: int | None, grac
             interval = config.get("interval", DEFAULT_CONFIG["interval"])
         if max_nags is None:
             max_nags = config.get("max_nags", DEFAULT_CONFIG["max_nags"])
-        if grace_period is None:
-            grace_period = config.get("grace_period", DEFAULT_CONFIG["grace_period"])
+
+        # Per-hook grace periods
+        grace_stop = config.get("grace_period_stop", DEFAULT_CONFIG["grace_period_stop"])
+        grace_permission = config.get("grace_period_permission", DEFAULT_CONFIG["grace_period_permission"])
+        grace_idle = config.get("grace_period_idle", DEFAULT_CONFIG["grace_period_idle"])
 
         # Resolve audio path
         if audio is None or audio == "default":
@@ -349,22 +402,31 @@ def cli(ctx, audio: str | None, interval: int | None, max_nags: int | None, grac
         click.echo(f"  Audio: {audio_path}")
         click.echo(f"  Interval: {interval}s" + (" (no repeat)" if interval == 0 else ""))
         click.echo(f"  Max nags: {max_nags if max_nags > 0 else 'unlimited'}")
-        click.echo(f"  Grace period: {grace_period}s" + (" (disabled)" if grace_period == 0 else ""))
+        click.echo(f"  Grace periods:")
+        click.echo(f"    Stop hook: {grace_stop}s ({grace_stop // 60}min)")
+        click.echo(f"    Permission hook: {grace_permission}s")
+        click.echo(f"    Idle hook: {grace_idle}s")
 
-        # Create the notify script
-        script_path = create_notify_script(audio_path, interval, max_nags, grace_period)
-        click.echo(f"  Script: {script_path}")
+        # Create per-hook notify scripts
+        stop_script = create_notify_script(audio_path, interval, max_nags, grace_stop, "stop")
+        permission_script = create_notify_script(audio_path, interval, max_nags, grace_permission, "permission")
+        idle_script = create_notify_script(audio_path, interval, max_nags, grace_idle, "idle")
 
-        # Add hook to Claude settings
-        setup_hook(script_path)
+        # The user stop script is created by create_notify_script as a side effect
+        user_stop_script = get_hooks_dir() / "waiting-stop.sh"
+
+        click.echo(f"  Scripts: {get_hooks_dir()}")
+
+        # Add hooks to Claude settings
+        setup_hooks(stop_script, permission_script, idle_script, user_stop_script)
         click.echo(f"  Hooks: {get_claude_settings_path()}")
 
         click.echo()
         click.echo("Done! Claude Code will nag you when waiting for input.")
         click.echo()
         click.echo("Behavior:")
-        if grace_period > 0:
-            click.echo(f"  - Waits {grace_period}s after your last response before alerting")
+        click.echo(f"  - Stop hook: alerts after {grace_stop}s ({grace_stop // 60}min) of inactivity")
+        click.echo(f"  - Permission hook: alerts after {grace_permission}s of inactivity")
         click.echo("  - Plays sound when Claude needs input")
         if interval > 0:
             click.echo(f"  - Repeats every {interval}s until you respond")
@@ -376,10 +438,15 @@ def disable():
     """Disable waiting notifications."""
     remove_hook()
 
-    # Remove scripts
-    for script_name in ["waiting-notify.sh", "waiting-stop.sh"]:
-        script_path = get_hooks_dir() / script_name
-        if script_path.exists():
+    # Remove all scripts (including per-hook variants)
+    script_patterns = [
+        "waiting-notify.sh",
+        "waiting-notify-*.sh",
+        "waiting-stop.sh",
+    ]
+    hooks_dir = get_hooks_dir()
+    for pattern in script_patterns:
+        for script_path in hooks_dir.glob(pattern):
             script_path.unlink()
 
     # Kill any running nag process
@@ -400,26 +467,56 @@ def kill():
 
 def _kill_nag_process() -> bool:
     """Kill any running nag process. Returns True if a process was killed."""
+    import subprocess
     import signal
 
-    pid_file = Path("/tmp/waiting-nag.pid")
-    activity_file = Path("/tmp/waiting-last-activity")
     killed = False
+    tmp_dir = Path("/tmp")
 
-    if pid_file.exists():
+    # Find all session-specific PID files (new format)
+    for pid_file in tmp_dir.glob("waiting-nag-*.pid"):
         try:
             pid = int(pid_file.read_text().strip())
-            # Kill the process and its children
             os.kill(pid, signal.SIGTERM)
+            # Also kill child processes
+            subprocess.run(["pkill", "-P", str(pid)], capture_output=True)
             killed = True
         except (ValueError, ProcessLookupError, PermissionError):
-            pass  # Process already dead or invalid PID
+            pass
         pid_file.unlink(missing_ok=True)
 
-    # Also record activity so grace period kicks in
-    if activity_file.exists() or killed:
-        import time
-        activity_file.write_text(str(int(time.time())))
+    # Also handle legacy single PID file
+    legacy_pid_file = tmp_dir / "waiting-nag.pid"
+    if legacy_pid_file.exists():
+        try:
+            pid = int(legacy_pid_file.read_text().strip())
+            os.kill(pid, signal.SIGTERM)
+            subprocess.run(["pkill", "-P", str(pid)], capture_output=True)
+            killed = True
+        except (ValueError, ProcessLookupError, PermissionError):
+            pass
+        legacy_pid_file.unlink(missing_ok=True)
+
+    # Kill any orphaned waiting-notify processes that might not have PID files
+    try:
+        result = subprocess.run(
+            ["pkill", "-f", "waiting-notify.sh"],
+            capture_output=True
+        )
+        if result.returncode == 0:
+            killed = True
+    except Exception:
+        pass
+
+    # Update activity files so grace period kicks in
+    import time
+    now = str(int(time.time()))
+    for activity_file in tmp_dir.glob("waiting-activity-*"):
+        activity_file.write_text(now)
+    # Legacy activity file
+    legacy_activity = tmp_dir / "waiting-last-activity"
+    if legacy_activity.exists():
+        legacy_activity.write_text(now)
 
     return killed
 
@@ -430,14 +527,17 @@ def status():
     settings = load_claude_settings()
     script_path = get_hooks_dir() / "waiting-notify.sh"
 
-    # Check if PermissionRequest hook is configured
+    # Check if any waiting hook is configured (current: Stop, Notification; legacy: PermissionRequest)
     hook_found = False
     if "hooks" in settings:
-        if "PermissionRequest" in settings["hooks"]:
-            for h in settings["hooks"]["PermissionRequest"]:
-                if _is_waiting_hook(h):
-                    hook_found = True
-                    break
+        for hook_type in ["Stop", "Notification", "PermissionRequest"]:
+            if hook_type in settings["hooks"]:
+                for h in settings["hooks"][hook_type]:
+                    if _is_waiting_hook(h):
+                        hook_found = True
+                        break
+            if hook_found:
+                break
 
     if hook_found and script_path.exists():
         click.echo("Status: ENABLED")
@@ -482,14 +582,25 @@ def status():
 @click.option("--audio", type=click.Path(), help="Default audio file path (use 'default' for bundled sound)")
 @click.option("--interval", type=int, help="Default seconds between nags")
 @click.option("--max-nags", type=int, help="Default max repeats")
-@click.option("--grace-period", type=int, help="Default grace period in seconds")
+@click.option("--grace-stop", type=int, help="Grace period for Stop hook (seconds)")
+@click.option("--grace-permission", type=int, help="Grace period for Permission hook (seconds)")
+@click.option("--grace-idle", type=int, help="Grace period for Idle hook (seconds)")
 @click.option("--show", is_flag=True, help="Show current config without modifying")
 @click.option("--reset", is_flag=True, help="Reset to default configuration")
-def configure(audio: str | None, interval: int | None, max_nags: int | None, grace_period: int | None, show: bool, reset: bool):
+def configure(
+    audio: str | None,
+    interval: int | None,
+    max_nags: int | None,
+    grace_stop: int | None,
+    grace_permission: int | None,
+    grace_idle: int | None,
+    show: bool,
+    reset: bool
+):
     """Configure default settings.
 
     Examples:
-        waiting configure --grace-period 30 --interval 15
+        waiting configure --grace-stop 300 --grace-permission 10
         waiting configure --audio /path/to/sound.wav
         waiting configure --show
         waiting configure --reset
@@ -503,18 +614,29 @@ def configure(audio: str | None, interval: int | None, max_nags: int | None, gra
         click.echo()
         show = True  # Show defaults after reset
 
-    if show or (audio is None and interval is None and max_nags is None and grace_period is None):
+    has_changes = any([audio, interval, max_nags, grace_stop, grace_permission, grace_idle])
+    if show or not has_changes:
         config = load_config()
         click.echo(f"Config: {config_path}")
         if not config_path.exists():
             click.echo("  (using defaults, no config file)")
         click.echo()
         click.echo("Current settings:")
-        audio_display = config['audio'] if config['audio'] != "default" else "default (bundled bell.wav)"
-        click.echo(f"  audio:        {audio_display}")
-        click.echo(f"  grace_period: {config['grace_period']}s")
-        click.echo(f"  interval:     {config['interval']}s")
-        click.echo(f"  max_nags:     {config['max_nags'] if config['max_nags'] > 0 else 'unlimited'}")
+        audio_display = config.get('audio', 'default')
+        if audio_display == "default" or audio_display is None:
+            audio_display = "default (bundled bell.wav)"
+        click.echo(f"  audio:             {audio_display}")
+        click.echo(f"  interval:          {config.get('interval', DEFAULT_CONFIG['interval'])}s")
+        max_nags_val = config.get('max_nags', DEFAULT_CONFIG['max_nags'])
+        click.echo(f"  max_nags:          {max_nags_val if max_nags_val > 0 else 'unlimited'}")
+        click.echo()
+        click.echo("Grace periods (seconds of inactivity before bell):")
+        gs = config.get('grace_period_stop', DEFAULT_CONFIG['grace_period_stop'])
+        gp = config.get('grace_period_permission', DEFAULT_CONFIG['grace_period_permission'])
+        gi = config.get('grace_period_idle', DEFAULT_CONFIG['grace_period_idle'])
+        click.echo(f"  grace_period_stop:       {gs}s ({gs // 60}min)")
+        click.echo(f"  grace_period_permission: {gp}s")
+        click.echo(f"  grace_period_idle:       {gi}s")
         return
 
     # Load existing config and update
@@ -522,7 +644,7 @@ def configure(audio: str | None, interval: int | None, max_nags: int | None, gra
 
     if audio is not None:
         if audio.lower() == "default":
-            config["audio"] = None
+            config["audio"] = "default"
         else:
             audio_path = str(Path(audio).expanduser().resolve())
             if not Path(audio_path).exists():
@@ -533,18 +655,32 @@ def configure(audio: str | None, interval: int | None, max_nags: int | None, gra
         config["interval"] = interval
     if max_nags is not None:
         config["max_nags"] = max_nags
-    if grace_period is not None:
-        config["grace_period"] = grace_period
+    if grace_stop is not None:
+        config["grace_period_stop"] = grace_stop
+    if grace_permission is not None:
+        config["grace_period_permission"] = grace_permission
+    if grace_idle is not None:
+        config["grace_period_idle"] = grace_idle
 
     save_config(config)
     click.echo(f"Config saved to: {config_path}")
     click.echo()
     click.echo("Updated settings:")
-    audio_display = config['audio'] if config['audio'] != "default" else "default (bundled bell.wav)"
-    click.echo(f"  audio:        {audio_display}")
-    click.echo(f"  grace_period: {config['grace_period']}s")
-    click.echo(f"  interval:     {config['interval']}s")
-    click.echo(f"  max_nags:     {config['max_nags'] if config['max_nags'] > 0 else 'unlimited'}")
+    audio_display = config.get('audio', 'default')
+    if audio_display == "default" or audio_display is None:
+        audio_display = "default (bundled bell.wav)"
+    click.echo(f"  audio:             {audio_display}")
+    click.echo(f"  interval:          {config.get('interval', DEFAULT_CONFIG['interval'])}s")
+    max_nags_val = config.get('max_nags', DEFAULT_CONFIG['max_nags'])
+    click.echo(f"  max_nags:          {max_nags_val if max_nags_val > 0 else 'unlimited'}")
+    click.echo()
+    click.echo("Grace periods:")
+    gs = config.get('grace_period_stop', DEFAULT_CONFIG['grace_period_stop'])
+    gp = config.get('grace_period_permission', DEFAULT_CONFIG['grace_period_permission'])
+    gi = config.get('grace_period_idle', DEFAULT_CONFIG['grace_period_idle'])
+    click.echo(f"  grace_period_stop:       {gs}s ({gs // 60}min)")
+    click.echo(f"  grace_period_permission: {gp}s")
+    click.echo(f"  grace_period_idle:       {gi}s")
     click.echo()
     click.echo("Run 'waiting' to apply these settings.")
 
