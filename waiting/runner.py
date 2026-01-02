@@ -60,7 +60,8 @@ class Runner:
                 self._exec_child(command)
                 # exec_child doesn't return on success
 
-            # Parent process
+            # Parent process - update detector with child PID for true detection
+            self.detector.set_child_pid(self.child_pid)
             return self._run_parent()
 
         except Exception as e:

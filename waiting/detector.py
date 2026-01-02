@@ -1,11 +1,12 @@
 """Wait detection state machine."""
 
-import termios
+import os
 import time
 from enum import Enum, auto
 from typing import Callable, Optional
 
 from .events import WaitingEntered, WaitingExited
+from .process_state import BlockedState, is_any_process_blocked_on_tty, is_linux
 from .utils import matches_prompt_pattern
 
 
@@ -15,51 +16,70 @@ class State(Enum):
     WAITING = auto()
 
 
-# Detection thresholds
-STALL_THRESHOLD = 2.0  # seconds of no output before checking prompt
-NAG_INTERVAL = 5.0    # seconds between repeat alerts
-MIN_ALERT_GAP = 1.0    # minimum seconds between any alerts
+# Detection thresholds (tuned for LLM CLI use case)
+# LLMs routinely pause 10-30s while generating; 30s avoids false positives
+STALL_THRESHOLD = float(os.environ.get('WAITING_STALL', '30.0'))
+NAG_INTERVAL = float(os.environ.get('WAITING_NAG', '60.0'))
+MIN_ALERT_GAP = 1.0     # minimum seconds between any alerts
+USER_IDLE_THRESHOLD = 2.0  # seconds of no typing before alerting
+STARTUP_GRACE = 3.0     # seconds to ignore alerts after startup
 
-
-def is_raw_mode(fd: int) -> bool:
-    """Check if the terminal is in raw mode (waiting for single keypress)."""
-    try:
-        attrs = termios.tcgetattr(fd)
-        # Check if ICANON (canonical mode) is disabled
-        # Raw mode has ICANON off - means input is available immediately
-        lflag = attrs[3]  # c_lflag
-        return not (lflag & termios.ICANON)
-    except (termios.error, OSError):
-        return False
+# On Linux with true detection, we can use a much shorter stall threshold
+# since we definitively know when the process is blocked on TTY read
+TRUE_DETECT_STALL = float(os.environ.get('WAITING_TRUE_STALL', '2.0'))
 
 
 class WaitDetector:
-    """State machine for detecting when a command is waiting for input."""
+    """State machine for detecting when a command is waiting for input.
 
-    def __init__(self, on_event: Optional[Callable] = None):
+    On Linux, uses true detection via /proc to determine if the child
+    process is blocked waiting for TTY input. On other platforms, falls
+    back to heuristic detection (output stall + prompt pattern matching).
+    """
+
+    def __init__(
+        self,
+        on_event: Optional[Callable] = None,
+        child_pid: Optional[int] = None
+    ):
         self.state = State.RUNNING
-        self.last_output_time = time.monotonic()
-        self.last_line = ""
+        now = time.monotonic()
+        self.last_output_time = now
+        self.last_input_time = now
+        self.startup_time = now  # Track when detector was created
+        self.last_visible_line = ""  # Last line with actual visible content
         self.last_alert_time = 0.0
         self.waiting_since: Optional[float] = None
         self.on_event = on_event
+        self.child_pid = child_pid
+        self._use_true_detection = is_linux() and child_pid is not None
+
+    def set_child_pid(self, pid: int) -> None:
+        """Set the child PID for true detection (Linux only).
+
+        Called by runner after fork, since we don't know the PID at init time.
+        """
+        self.child_pid = pid
+        self._use_true_detection = is_linux() and pid is not None
 
     def record_output(self, data: bytes) -> None:
         """Record that output was received from the command."""
         self.last_output_time = time.monotonic()
 
-        # Extract last line from output for prompt detection
+        # Extract last visible line for prompt detection
         try:
             text = data.decode('utf-8', errors='replace')
+            from .utils import strip_ansi
+
+            # Split into lines and find the last one with visible content
             lines = text.split('\n')
-            # Get the last non-empty line, or the last line if all empty
             for line in reversed(lines):
-                if line.strip():
-                    self.last_line = line
+                # Strip ANSI codes first, then whitespace
+                visible = strip_ansi(line).strip()
+                # Only update if there's meaningful visible content
+                if visible and len(visible) > 1:
+                    self.last_visible_line = visible
                     break
-            else:
-                if lines:
-                    self.last_line = lines[-1]
         except Exception:
             pass
 
@@ -69,6 +89,7 @@ class WaitDetector:
 
     def record_input(self) -> None:
         """Record that user input was detected."""
+        self.last_input_time = time.monotonic()
         if self.state == State.WAITING:
             self._transition_to_running("input")
 
@@ -97,16 +118,49 @@ class WaitDetector:
         return False
 
     def _check_waiting(self, pty_fd: int, now: float) -> bool:
-        """Determine if the command is currently waiting for input."""
-        # Primary check: raw mode detection
-        if is_raw_mode(pty_fd):
-            return True
+        """Determine if the command is currently waiting for input.
 
-        # Secondary check: output stall + prompt pattern
+        On Linux with child_pid set, uses true detection via /proc.
+        Otherwise falls back to heuristic detection.
+        """
+        # Don't alert during startup grace period (terminal initialization)
+        if now - self.startup_time < STARTUP_GRACE:
+            return False
+
         stall_duration = now - self.last_output_time
-        if stall_duration >= STALL_THRESHOLD:
-            if matches_prompt_pattern(self.last_line):
-                return True
+
+        # TRUE DETECTION (Linux only)
+        # Check if child process is definitively blocked on TTY read
+        if self._use_true_detection and self.child_pid:
+            blocked_state = is_any_process_blocked_on_tty(self.child_pid)
+
+            if blocked_state == BlockedState.BLOCKED_TTY_READ:
+                # Definitively blocked on TTY read - only need short stall
+                if stall_duration >= TRUE_DETECT_STALL:
+                    return True
+                return False
+
+            elif blocked_state == BlockedState.NOT_BLOCKED:
+                # Definitively NOT blocked - no alert
+                return False
+
+            elif blocked_state == BlockedState.BLOCKED_SELECT:
+                # Might be blocked on TTY via select - use pattern matching
+                if stall_duration >= TRUE_DETECT_STALL:
+                    if matches_prompt_pattern(self.last_visible_line):
+                        return True
+                return False
+
+            # UNKNOWN - fall through to heuristic
+
+        # HEURISTIC DETECTION (macOS, or Linux fallback)
+        # Must have output stall before considering waiting
+        if stall_duration < STALL_THRESHOLD:
+            return False
+
+        # Check if last visible line matches a prompt pattern
+        if matches_prompt_pattern(self.last_visible_line):
+            return True
 
         return False
 
@@ -127,6 +181,10 @@ class WaitDetector:
 
     def _should_alert(self, now: float) -> bool:
         """Determine if we should send an alert now."""
+        # Don't alert if user recently typed
+        if now - self.last_input_time < USER_IDLE_THRESHOLD:
+            return False
+
         # Minimum gap between alerts
         if now - self.last_alert_time < MIN_ALERT_GAP:
             return False
