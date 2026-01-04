@@ -402,6 +402,21 @@ else
     echo "  Skipping first bell, entering monitoring mode" >> "\\$DEBUG_LOG"
 fi
 
+# In monitoring mode, wait longer (lookback_window) before assuming user is AFK
+# This prevents premature bells when user is actively approving multiple dialogs
+if [ "\\$SKIP_FIRST_BELL" = true ]; then
+    echo "  Monitoring mode: waiting \\${{LOOKBACK_WINDOW}}s before first nag" >> "\\$DEBUG_LOG"
+    for i in \\$(seq 1 "\\$LOOKBACK_WINDOW"); do
+        sleep 1
+        if [ ! -f "\\$PID_FILE" ]; then
+            echo "  PID file removed during monitoring delay, exiting" >> "\\$DEBUG_LOG"
+            rm -f "\\$0"
+            exit 0
+        fi
+    done
+    echo "  Monitoring delay complete, entering nag loop" >> "\\$DEBUG_LOG"
+fi
+
 if [ "\\$INTERVAL" -eq 0 ]; then
     rm -f "\\$PID_FILE" "\\$0"
     exit 0
