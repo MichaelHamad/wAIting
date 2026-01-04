@@ -20,8 +20,6 @@ DEFAULT_CONFIG = {
     "grace_period_stop": 300,         # 5 min - after Claude finishes responding
     "grace_period_permission": 10,    # 10s - when permission dialog shown
     "grace_period_idle": 0,           # 0 - idle_prompt already has 60s delay built in
-    # Lookback window for permission hook (prevents bell for rapid successive dialogs)
-    "lookback_window": 30,            # 30s - if active in last 30s, no bell for new permission
 }
 
 
@@ -139,6 +137,12 @@ fi
 PID_FILE="/tmp/waiting-nag-$SESSION_ID.pid"
 ACTIVITY_FILE="/tmp/waiting-activity-stop-$SESSION_ID"
 STOP_TIME_FILE="/tmp/waiting-stop-time-$SESSION_ID"
+HEARTBEAT_FILE="/tmp/waiting-heartbeat-$SESSION_ID"
+# How long without a heartbeat before we assume Claude is dead (2 minutes)
+HEARTBEAT_TIMEOUT=120
+
+# Update heartbeat (proves Claude is alive)
+echo "$(date +%s)" > "$HEARTBEAT_FILE"
 
 # Kill any existing wait/nag process for THIS session
 if [ -f "$PID_FILE" ]; then
@@ -199,8 +203,8 @@ play_sound() {{
 
     # Start nag loop if interval > 0
     if [ "$INTERVAL" -gt 0 ]; then
-        # Max lifetime: 2 hours (prevents orphaned nag loops while allowing long breaks)
-        MAX_LIFETIME=7200
+        # Max lifetime: 10 minutes (prevents orphaned nag loops)
+        MAX_LIFETIME=600
         START_TIME=$(date +%s)
         count=0
         while true; do
@@ -211,6 +215,16 @@ play_sound() {{
             ELAPSED=$((NOW - START_TIME))
             if [ "$ELAPSED" -ge "$MAX_LIFETIME" ]; then
                 break
+            fi
+
+            # Check if Claude is still alive via heartbeat
+            if [ -f "$HEARTBEAT_FILE" ]; then
+                last_heartbeat=$(cat "$HEARTBEAT_FILE" 2>/dev/null || echo 0)
+                heartbeat_age=$((NOW - last_heartbeat))
+                if [ "$heartbeat_age" -gt "$HEARTBEAT_TIMEOUT" ]; then
+                    # Claude appears dead, stop nagging
+                    break
+                fi
             fi
 
             # Re-check activity in case user came back
@@ -248,32 +262,29 @@ def create_permission_notify_script(
     interval: int = 30,
     max_nags: int = 0,
     grace_period: int = 10,
-    lookback_window: int = 30,
 ) -> Path:
-    """Create the Permission hook notification script with delayed bell.
+    """Create the Permission hook notification script with wait-and-see logic.
 
     The Permission hook creates a pending marker file, then waits grace_period seconds.
-    After the delay, it checks if user was active within lookback_window seconds.
+    After the delay, it checks if user was active SINCE the dialog opened.
     The pending file helps PreToolUse distinguish user approvals from auto-approved tools.
 
     Args:
         audio_path: Path to the audio file
         interval: Seconds between repeated notifications (0 = no repeat)
         max_nags: Maximum number of repeats (0 = unlimited)
-        grace_period: Seconds to wait before playing bell
-        lookback_window: If active in last N seconds, skip bell (handles rapid dialogs)
+        grace_period: Seconds to wait before checking activity and playing bell
     """
     script_path = get_hooks_dir() / "waiting-notify-permission.sh"
 
     script_content = f"""#!/bin/bash
-# Waiting - Permission hook with DELAYED bell
-# Checks for recent activity using lookback window
+# Waiting - Permission hook with wait-and-see logic
+# Waits grace_period, then checks if user responded since dialog opened
 # Audio file: {audio_path}
 
 INTERVAL={interval}
 MAX_NAGS={max_nags}
 DELAY={grace_period}
-LOOKBACK_WINDOW={lookback_window}
 DEBUG_LOG="/tmp/waiting-debug.log"
 
 # Read hook context from stdin to get session ID
@@ -296,9 +307,13 @@ NAG_MARKER="waiting-nag-$SESSION_ID"
 PID_FILE="/tmp/$NAG_MARKER.pid"
 PENDING_FILE="/tmp/waiting-pending-$SESSION_ID"
 ACTIVITY_FILE="/tmp/waiting-activity-permission-$SESSION_ID"
+HEARTBEAT_FILE="/tmp/waiting-heartbeat-$SESSION_ID"
 
 # Get current time upfront
 now=$(date +%s)
+
+# Update heartbeat (proves Claude is alive)
+echo "$now" > "$HEARTBEAT_FILE"
 
 # Kill ALL existing nag processes for this session
 pkill -f "$NAG_MARKER" 2>/dev/null
@@ -341,10 +356,12 @@ PID_FILE="$PID_FILE"
 DELAY=$DELAY
 INTERVAL=$INTERVAL
 MAX_NAGS=$MAX_NAGS
-LOOKBACK_WINDOW=$LOOKBACK_WINDOW
 AUDIO_PATH="$AUDIO_PATH"
 ACTIVITY_FILE="$ACTIVITY_FILE"
+HEARTBEAT_FILE="$HEARTBEAT_FILE"
 START_TIMESTAMP=$now
+# How long without a heartbeat before we assume Claude is dead (2 minutes)
+HEARTBEAT_TIMEOUT=120
 
 # Trap SIGTERM for instant kill when PreToolUse runs pkill
 # Also kill any background sound processes
@@ -377,52 +394,34 @@ if [ ! -f "\\$PID_FILE" ]; then
     exit 0
 fi
 
-# Check if user was active within lookback window (handles rapid successive dialogs)
-lookback_threshold=\\$((START_TIMESTAMP - LOOKBACK_WINDOW))
-echo "  Activity check: START_TIMESTAMP=\\$START_TIMESTAMP, lookback_threshold=\\$lookback_threshold (\\${{LOOKBACK_WINDOW}}s window)" >> "\\$DEBUG_LOG"
+# Wait-and-see: check if user was active SINCE the dialog opened
+# Use >= to handle same-second cascading dialogs (user approves one, Claude shows another)
+echo "  Checking activity since dialog opened (START_TIMESTAMP=\\$START_TIMESTAMP)" >> "\\$DEBUG_LOG"
 
-SKIP_FIRST_BELL=false
 if [ -f "\\$ACTIVITY_FILE" ]; then
     last_activity=\\$(cat "\\$ACTIVITY_FILE" 2>/dev/null || echo 0)
-    echo "  Activity check: last_activity=\\$last_activity (from \\$ACTIVITY_FILE)" >> "\\$DEBUG_LOG"
-    if [ "\\$last_activity" -gt "\\$lookback_threshold" ]; then
-        echo "  User was active recently (\\$last_activity > \\$lookback_threshold), skipping first bell but continuing to monitor" >> "\\$DEBUG_LOG"
-        SKIP_FIRST_BELL=true
-    else
-        echo "  User was NOT active in lookback window (\\$last_activity <= \\$lookback_threshold)" >> "\\$DEBUG_LOG"
+    echo "  Activity check: last_activity=\\$last_activity" >> "\\$DEBUG_LOG"
+    if [ "\\$last_activity" -ge "\\$START_TIMESTAMP" ]; then
+        echo "  User responded during grace period (\\$last_activity >= \\$START_TIMESTAMP), exiting" >> "\\$DEBUG_LOG"
+        rm -f "\\$PID_FILE" "\\$0"
+        exit 0
     fi
+    echo "  No activity since dialog opened (\\$last_activity < \\$START_TIMESTAMP)" >> "\\$DEBUG_LOG"
 else
-    echo "  Activity check: NO activity file found at \\$ACTIVITY_FILE" >> "\\$DEBUG_LOG"
+    echo "  No activity file found at \\$ACTIVITY_FILE" >> "\\$DEBUG_LOG"
 fi
 
-if [ "\\$SKIP_FIRST_BELL" = false ]; then
-    echo "  Delay complete, playing first bell" >> "\\$DEBUG_LOG"
-    play_sound
-else
-    echo "  Skipping first bell, entering monitoring mode" >> "\\$DEBUG_LOG"
-fi
-
-# In monitoring mode, wait longer (lookback_window) before assuming user is AFK
-# This prevents premature bells when user is actively approving multiple dialogs
-if [ "\\$SKIP_FIRST_BELL" = true ]; then
-    echo "  Monitoring mode: waiting \\${{LOOKBACK_WINDOW}}s before first nag" >> "\\$DEBUG_LOG"
-    for i in \\$(seq 1 "\\$LOOKBACK_WINDOW"); do
-        sleep 1
-        if [ ! -f "\\$PID_FILE" ]; then
-            echo "  PID file removed during monitoring delay, exiting" >> "\\$DEBUG_LOG"
-            rm -f "\\$0"
-            exit 0
-        fi
-    done
-    echo "  Monitoring delay complete, entering nag loop" >> "\\$DEBUG_LOG"
-fi
+# No activity since dialog - play bell
+echo "  Grace period complete, playing bell" >> "\\$DEBUG_LOG"
+play_sound
 
 if [ "\\$INTERVAL" -eq 0 ]; then
     rm -f "\\$PID_FILE" "\\$0"
     exit 0
 fi
 
-MAX_LIFETIME=7200
+# Max lifetime: 10 minutes (prevents orphaned nag loops)
+MAX_LIFETIME=600
 LOOP_START=\\$(date +%s)
 count=0
 while true; do
@@ -440,14 +439,27 @@ while true; do
     NOW=\\$(date +%s)
     ELAPSED=\\$((NOW - LOOP_START))
     if [ "\\$ELAPSED" -ge "\\$MAX_LIFETIME" ]; then
-        echo "  Nag loop timeout" >> "\\$DEBUG_LOG"
+        echo "  Nag loop max lifetime reached, exiting" >> "\\$DEBUG_LOG"
         break
     fi
-    # Check if user responded to THIS dialog (activity after dialog appeared)
+
+    # Check if Claude is still alive via heartbeat
+    # If no hook has fired in HEARTBEAT_TIMEOUT seconds, Claude is probably dead
+    if [ -f "\\$HEARTBEAT_FILE" ]; then
+        last_heartbeat=\\$(cat "\\$HEARTBEAT_FILE" 2>/dev/null || echo 0)
+        heartbeat_age=\\$((NOW - last_heartbeat))
+        if [ "\\$heartbeat_age" -gt "\\$HEARTBEAT_TIMEOUT" ]; then
+            echo "  Heartbeat stale (\\${{heartbeat_age}}s > \\${{HEARTBEAT_TIMEOUT}}s), Claude appears dead, exiting" >> "\\$DEBUG_LOG"
+            rm -f "\\$PID_FILE" "\\$0"
+            exit 0
+        fi
+    fi
+
+    # Check if user responded to THIS dialog (activity at or after dialog appeared)
     if [ -f "\\$ACTIVITY_FILE" ]; then
         last_activity=\\$(cat "\\$ACTIVITY_FILE" 2>/dev/null || echo 0)
-        if [ "\\$last_activity" -gt "\\$START_TIMESTAMP" ]; then
-            echo "  User responded (activity \\$last_activity > start \\$START_TIMESTAMP), stopping nag" >> "\\$DEBUG_LOG"
+        if [ "\\$last_activity" -ge "\\$START_TIMESTAMP" ]; then
+            echo "  User responded (activity \\$last_activity >= start \\$START_TIMESTAMP), stopping nag" >> "\\$DEBUG_LOG"
             rm -f "\\$PID_FILE" "\\$0"
             exit 0
         fi
@@ -513,6 +525,12 @@ fi
 # Use session-specific files (uses permission activity file)
 PID_FILE="/tmp/waiting-nag-$SESSION_ID.pid"
 ACTIVITY_FILE="/tmp/waiting-activity-permission-$SESSION_ID"
+HEARTBEAT_FILE="/tmp/waiting-heartbeat-$SESSION_ID"
+# How long without a heartbeat before we assume Claude is dead (2 minutes)
+HEARTBEAT_TIMEOUT=120
+
+# Update heartbeat (proves Claude is alive)
+echo "$(date +%s)" > "$HEARTBEAT_FILE"
 
 # Check if user was recently active (within grace period)
 if [ "$GRACE_PERIOD" -gt 0 ] && [ -f "$ACTIVITY_FILE" ]; then
@@ -566,8 +584,8 @@ IDLE_TIME=$(date +%s)
 
 # Start background nag loop
 (
-    # Max lifetime: 2 hours (prevents orphaned nag loops while allowing long breaks)
-    MAX_LIFETIME=7200
+    # Max lifetime: 10 minutes (prevents orphaned nag loops)
+    MAX_LIFETIME=600
     START_TIME=$(date +%s)
     count=0
     while true; do
@@ -578,6 +596,17 @@ IDLE_TIME=$(date +%s)
         ELAPSED=$((NOW - START_TIME))
         if [ "$ELAPSED" -ge "$MAX_LIFETIME" ]; then
             break
+        fi
+
+        # Check if Claude is still alive via heartbeat
+        if [ -f "$HEARTBEAT_FILE" ]; then
+            last_heartbeat=$(cat "$HEARTBEAT_FILE" 2>/dev/null || echo 0)
+            heartbeat_age=$((NOW - last_heartbeat))
+            if [ "$heartbeat_age" -gt "$HEARTBEAT_TIMEOUT" ]; then
+                # Claude appears dead, stop nagging
+                rm -f "$PID_FILE"
+                exit 0
+            fi
         fi
 
         # Check if user was active since idle notification
@@ -649,6 +678,7 @@ NAG_MARKER="waiting-nag-$SESSION_ID"
 PID_FILE="/tmp/$NAG_MARKER.pid"
 STOP_ACTIVITY="/tmp/waiting-activity-stop-$SESSION_ID"
 PERMISSION_ACTIVITY="/tmp/waiting-activity-permission-$SESSION_ID"
+HEARTBEAT_FILE="/tmp/waiting-heartbeat-$SESSION_ID"
 
 # Record activity for both hooks
 NOW=$(date +%s)
@@ -656,7 +686,9 @@ NOW=$(date +%s)
 ACTIVITY_TIME=$((NOW + 1))
 echo "$ACTIVITY_TIME" > "$STOP_ACTIVITY"
 echo "$ACTIVITY_TIME" > "$PERMISSION_ACTIVITY"
-echo "  Updated activity: $ACTIVITY_TIME (NOW+1 buffer)" >> "$DEBUG_LOG"
+# Update heartbeat (proves Claude is alive)
+echo "$NOW" > "$HEARTBEAT_FILE"
+echo "  Updated activity: $ACTIVITY_TIME (NOW+1 buffer), heartbeat: $NOW" >> "$DEBUG_LOG"
 
 # Kill ALL nag processes for this session using the marker (more reliable than PID)
 if pkill -f "$NAG_MARKER" 2>/dev/null; then
@@ -700,17 +732,25 @@ NAG_MARKER="waiting-nag-$SESSION_ID"
 PID_FILE="/tmp/$NAG_MARKER.pid"
 PENDING_FILE="/tmp/waiting-pending-$SESSION_ID"
 ACTIVITY_FILE="/tmp/waiting-activity-permission-$SESSION_ID"
+HEARTBEAT_FILE="/tmp/waiting-heartbeat-$SESSION_ID"
 
-# Only update activity if there's a pending permission (user approved, not auto-approved)
+NOW=$(date +%s)
+# Always update heartbeat (proves Claude is alive, regardless of approval type)
+echo "$NOW" > "$HEARTBEAT_FILE"
+
+# Add 1 second buffer to handle same-second cascading dialogs
+ACTIVITY_TIME=$((NOW + 1))
+
+# ALWAYS update activity when any tool runs - Claude is working, user is present
+# This prevents false "AFK" detection when new permission dialogs appear
+echo "$ACTIVITY_TIME" > "$ACTIVITY_FILE"
+
+# Clean up pending file if it exists (user manually approved)
 if [ -f "$PENDING_FILE" ]; then
-    NOW=$(date +%s)
-    # Add 1 second buffer to handle same-second cascading dialogs
-    ACTIVITY_TIME=$((NOW + 1))
-    echo "$ACTIVITY_TIME" > "$ACTIVITY_FILE"
     rm -f "$PENDING_FILE"
-    echo "  User approved permission, updated activity: $ACTIVITY_TIME (NOW+1 buffer)" >> "$DEBUG_LOG"
+    echo "  User approved permission, updated activity: $ACTIVITY_TIME, heartbeat: $NOW" >> "$DEBUG_LOG"
 else
-    echo "  Auto-approved tool, no activity update" >> "$DEBUG_LOG"
+    echo "  Auto-approved tool, updated activity: $ACTIVITY_TIME, heartbeat: $NOW" >> "$DEBUG_LOG"
 fi
 
 # Kill ALL nag processes for this session
@@ -917,9 +957,6 @@ def cli(ctx, audio: str | None, interval: int | None, max_nags: int | None):
         grace_permission = config.get("grace_period_permission", DEFAULT_CONFIG["grace_period_permission"])
         grace_idle = config.get("grace_period_idle", DEFAULT_CONFIG["grace_period_idle"])
 
-        # Lookback window for rapid successive permissions
-        lookback_window = config.get("lookback_window", DEFAULT_CONFIG["lookback_window"])
-
         # Enabled hooks
         enabled_hooks = config.get("enabled_hooks", DEFAULT_CONFIG["enabled_hooks"])
 
@@ -932,6 +969,9 @@ def cli(ctx, audio: str | None, interval: int | None, max_nags: int | None):
         if not Path(audio_path).exists():
             raise click.ClickException(f"Audio file not found: {audio_path}")
 
+        # Kill any existing nag processes before setting up fresh
+        _kill_nag_process()
+
         click.echo(f"Setting up waiting notification...")
         click.echo(f"  Audio: {audio_path}")
         click.echo(f"  Interval: {interval}s" + (" (no repeat)" if interval == 0 else ""))
@@ -942,13 +982,12 @@ def cli(ctx, audio: str | None, interval: int | None, max_nags: int | None):
             click.echo(f"    Stop hook: {grace_stop}s ({grace_stop // 60}min)")
         if "permission" in enabled_hooks:
             click.echo(f"    Permission hook: {grace_permission}s")
-            click.echo(f"    Lookback window: {lookback_window}s (for rapid successive dialogs)")
         if "idle" in enabled_hooks:
             click.echo(f"    Idle hook: {grace_idle}s")
 
         # Create per-hook notify scripts
         stop_script = create_stop_notify_script(audio_path, interval, max_nags, grace_stop)
-        permission_script = create_permission_notify_script(audio_path, interval, max_nags, grace_permission, lookback_window)
+        permission_script = create_permission_notify_script(audio_path, interval, max_nags, grace_permission)
         idle_script = create_idle_notify_script(audio_path, interval, max_nags, grace_idle)
 
         # Create activity recording scripts
@@ -1041,16 +1080,17 @@ def _kill_nag_process() -> bool:
             pass
         legacy_pid_file.unlink(missing_ok=True)
 
-    # Kill any orphaned waiting-notify processes that might not have PID files
-    try:
-        result = subprocess.run(
-            ["pkill", "-f", "waiting-notify"],
-            capture_output=True
-        )
-        if result.returncode == 0:
-            killed = True
-    except Exception:
-        pass
+    # Kill any orphaned waiting-notify or waiting-nag processes that might not have PID files
+    for pattern in ["waiting-notify", "waiting-nag"]:
+        try:
+            result = subprocess.run(
+                ["pkill", "-f", pattern],
+                capture_output=True
+            )
+            if result.returncode == 0:
+                killed = True
+        except Exception:
+            pass
 
     # Update activity files so grace period kicks in
     import time
@@ -1071,6 +1111,14 @@ def _kill_nag_process() -> bool:
     # Clean up stop-time files
     for stop_time_file in tmp_dir.glob("waiting-stop-time-*"):
         stop_time_file.unlink(missing_ok=True)
+
+    # Clean up pending files
+    for pending_file in tmp_dir.glob("waiting-pending-*"):
+        pending_file.unlink(missing_ok=True)
+
+    # Clean up nag wrapper scripts
+    for wrapper_script in tmp_dir.glob("waiting-nag-*.sh"):
+        wrapper_script.unlink(missing_ok=True)
 
     return killed
 
@@ -1123,9 +1171,7 @@ def status():
             click.echo(f"  Stop: {gs}s ({gs // 60}min)")
         if "permission" in active_hooks:
             gp = config.get('grace_period_permission', DEFAULT_CONFIG['grace_period_permission'])
-            lw = config.get('lookback_window', DEFAULT_CONFIG['lookback_window'])
             click.echo(f"  Permission: {gp}s")
-            click.echo(f"  Lookback window: {lw}s (for rapid successive dialogs)")
         if "idle" in active_hooks:
             gi = config.get('grace_period_idle', DEFAULT_CONFIG['grace_period_idle'])
             click.echo(f"  Idle: {gi}s (+ 60s built-in)")
