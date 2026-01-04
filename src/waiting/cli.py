@@ -349,6 +349,17 @@ play_sound() {{
 NAG_SCRIPT="/tmp/$NAG_MARKER.sh"
 AUDIO_PATH="{audio_path}"
 
+# Create a wrapper that properly detaches the process
+WRAPPER_SCRIPT="/tmp/$NAG_MARKER-wrapper.sh"
+
+cat > "$WRAPPER_SCRIPT" << 'WRAPEOF'
+#!/bin/bash
+# Wrapper to properly detach nag process from parent
+exec "$@" < /dev/null > /dev/null 2>&1
+WRAPEOF
+
+chmod +x "$WRAPPER_SCRIPT"
+
 cat > "$NAG_SCRIPT" << NAGEOF
 #!/bin/bash
 DEBUG_LOG="/tmp/waiting-debug.log"
@@ -476,12 +487,16 @@ NAGEOF
 
 chmod +x "$NAG_SCRIPT"
 
-# Run the nag script in background (its path contains the marker for pkill -f)
-"$NAG_SCRIPT" &
+# Run the nag script in background using wrapper for proper detachment
+# The wrapper redirects stdin from /dev/null and discards output
+"$WRAPPER_SCRIPT" "$NAG_SCRIPT" &
 
 # Save PID of background process
 echo $! > "$PID_FILE"
 echo "  Background PID: $!" >> "$DEBUG_LOG"
+
+# Explicitly disown the process so it continues even if parent exits
+disown -a 2>/dev/null || true
 """
 
     with open(script_path, "w") as f:
@@ -1116,8 +1131,10 @@ def _kill_nag_process() -> bool:
     for pending_file in tmp_dir.glob("waiting-pending-*"):
         pending_file.unlink(missing_ok=True)
 
-    # Clean up nag wrapper scripts
+    # Clean up nag wrapper scripts (both nag and wrapper variants)
     for wrapper_script in tmp_dir.glob("waiting-nag-*.sh"):
+        wrapper_script.unlink(missing_ok=True)
+    for wrapper_script in tmp_dir.glob("waiting-nag-*-wrapper.sh"):
         wrapper_script.unlink(missing_ok=True)
 
     return killed
