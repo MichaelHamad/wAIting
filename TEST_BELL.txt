@@ -1,0 +1,9 @@
+Testing the timestamp comparison fix (>= to >)
+
+If you're reading this in a permission dialog:
+- DON'T APPROVE for at least 15 seconds
+- Bell should play at ~10 seconds
+- Bell should repeat every ~15 seconds after that
+
+Test timestamp: 2026-01-03 16:45
+Session: Testing after restart with > fix

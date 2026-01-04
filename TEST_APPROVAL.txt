@@ -1,0 +1,10 @@
+Testing if nag stops when user approves permission.
+
+Approval test timestamp: 2026-01-03 16:54
+
+Instructions:
+1. Approve this permission IMMEDIATELY when you see the dialog
+2. Wait 15 seconds
+3. Report if you hear a bell or not
+
+Expected: No bell should play if PreToolUse kills the nag properly.

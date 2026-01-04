@@ -1,4 +1,86 @@
-# Waiting v2 - Recent Changes
+# Waiting - Changelog
+
+## v0.2.1 - Delayed Bell Fix (2026-01-02)
+
+### Problems Fixed
+
+1. **Bell never played**: `PreToolUse` fired for auto-approved tools, constantly updating the activity file. Grace period check always passed (`elapsed=0s`).
+
+2. **Bell played immediately**: Even when working correctly, the bell played instantly when a permission dialog appeared - annoying when actively watching Claude work.
+
+### Solution: Split Responsibilities + Delayed Bell
+
+#### Hook Responsibility Changes
+
+| Hook | Updates Activity | Kills Nag |
+|------|-----------------|-----------|
+| `UserPromptSubmit` | YES | YES |
+| `PreToolUse` | NO (changed) | YES |
+
+- Activity tracking now ONLY happens when user TYPES a message
+- `PreToolUse` only kills nag loops, doesn't update activity
+- Auto-approved tools no longer pollute activity tracking
+
+#### Delayed Bell
+
+Changed from immediate bell to delayed bell:
+
+```
+BEFORE: Permission dialog → Bell immediately → Nag loop
+
+AFTER:  Permission dialog → Wait 10s → Bell (if not approved) → Nag loop
+```
+
+If user approves within the delay, `PreToolUse` kills the timer before bell plays.
+
+### New Flow
+
+```
+1. Permission dialog appears
+   └→ Start background timer (10s delay)
+   └→ Save timer PID to file
+
+2. During 10s delay:
+   └→ User approves? → PreToolUse fires → Kills timer → NO BELL
+   └→ User AFK? → Timer completes → Bell plays → Nag loop starts
+
+3. Nag loop running:
+   └→ User approves → PreToolUse fires → Kills nag → STOPS
+```
+
+### Configuration
+
+The delay is configured via `--grace-permission`:
+
+```bash
+waiting configure --grace-permission 5   # 5s delay (faster alert)
+waiting configure --grace-permission 30  # 30s delay (more patience)
+waiting  # Apply changes
+```
+
+### Files Changed
+
+- `waiting-activity-permission.sh` → renamed to `waiting-activity-tooluse.sh`
+- `waiting-notify-permission.sh` → now uses delayed bell logic
+- `setup_hooks()` → updated parameter names
+
+### Debug Logging
+
+All hooks log to `/tmp/waiting-debug.log`:
+
+```
+PermissionRequest fired
+  Session: abc123, delay: 10s
+  Starting delayed bell (waiting 10s)
+
+PreToolUse fired
+  Session: abc123
+  Killing nag PID: 12345
+```
+
+---
+
+## v0.2.0 - Multi-Hook System
 
 ## Overview
 

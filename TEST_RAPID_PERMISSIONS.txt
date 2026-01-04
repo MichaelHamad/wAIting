@@ -1,0 +1,31 @@
+Testing 30-second lookback window for rapid successive permissions.
+
+Test timestamp: 2026-01-03 17:15
+Fix: Implemented lookback window - checks if user was active in last 30s
+
+Problem being fixed:
+- User approves Permission Dialog A
+- Permission Dialog B appears immediately after (same second or within seconds)
+- OLD BEHAVIOR: Bell plays for B even though user just proved they're present
+- NEW BEHAVIOR: No bell for B if A was approved within last 30 seconds
+
+Test scenario:
+1. Trigger multiple permission dialogs in rapid succession
+2. Approve the FIRST dialog quickly (within 10 seconds - before grace period)
+3. Observe if bell plays for the SECOND dialog
+
+Expected result:
+- NO bell should play for Dialog B if you approved Dialog A within the last 30 seconds
+- This prevents annoying bells when you're actively approving permissions
+
+Technical details:
+- Lookback window: 30 seconds (configurable in ~/.waiting.json)
+- Grace period: 10 seconds (unchanged)
+- Activity check: last_activity > (START_TIMESTAMP - 30)
+- Debug log: /tmp/waiting-debug.log
+
+To test:
+1. Make sure you restarted Claude Code after running: pip install -e . && waiting
+2. Trigger this permission by editing multiple files rapidly
+3. Approve first dialog quickly
+4. Second dialog should NOT play bell (you're clearly present)

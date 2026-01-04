@@ -13,12 +13,15 @@ DEFAULT_CONFIG = {
     "audio": "default",  # "default" = bundled bell.wav, or path to custom .wav
     "interval": 30,
     "max_nags": 0,
+    "volume": 100,  # Volume 0-100% (some players may not support this)
     # Which hooks are enabled (stop, permission, idle)
     "enabled_hooks": ["stop", "permission", "idle"],
     # Per-hook grace periods (seconds of inactivity before bell plays)
     "grace_period_stop": 300,         # 5 min - after Claude finishes responding
     "grace_period_permission": 10,    # 10s - when permission dialog shown
     "grace_period_idle": 0,           # 0 - idle_prompt already has 60s delay built in
+    # Lookback window for permission hook (prevents bell for rapid successive dialogs)
+    "lookback_window": 30,            # 30s - if active in last 30s, no bell for new permission
 }
 
 
@@ -77,8 +80,9 @@ def load_claude_settings() -> dict:
     settings_path.parent.mkdir(parents=True, exist_ok=True)
 
     if settings_path.exists():
-        with open(settings_path) as f:
-            return json.load(f)
+        content = settings_path.read_text().strip()
+        if content:
+            return json.loads(content)
     return {}
 
 
@@ -89,27 +93,33 @@ def save_claude_settings(settings: dict) -> None:
         json.dump(settings, f, indent=2)
 
 
-def create_notify_script(
+def create_stop_notify_script(
     audio_path: str,
     interval: int = 30,
     max_nags: int = 0,
-    grace_period: int = 60,
-    hook_type: str = "default"
+    grace_period: int = 300,
+    volume: int = 100,
 ) -> Path:
-    """Create the notification shell script for a specific hook type.
+    """Create the Stop hook notification script with 'wait and see' logic.
+
+    The Stop hook uses delayed checking:
+    1. Record when Stop fired
+    2. Wait for grace_period
+    3. Check if any activity since Stop fired
+    4. If no activity → bell (user is AFK)
 
     Args:
         audio_path: Path to the audio file
         interval: Seconds between repeated notifications (0 = no repeat)
         max_nags: Maximum number of repeats (0 = unlimited)
-        grace_period: Seconds after user activity to suppress notifications (0 = no grace)
-        hook_type: The hook type (stop, permission, idle, default)
+        grace_period: Seconds to wait before checking for activity
+        volume: Volume level 0-100%
     """
-    script_name = f"waiting-notify-{hook_type}.sh" if hook_type != "default" else "waiting-notify.sh"
-    script_path = get_hooks_dir() / script_name
+    script_path = get_hooks_dir() / "waiting-notify-stop.sh"
 
     script_content = f"""#!/bin/bash
-# Waiting - Nag user until they respond to Claude Code
+# Waiting - Stop hook with "wait and see" logic
+# Waits for grace period, then checks if user has been active
 # Audio file: {audio_path}
 
 INTERVAL={interval}
@@ -127,7 +137,367 @@ fi
 
 # Use session-specific files
 PID_FILE="/tmp/waiting-nag-$SESSION_ID.pid"
-ACTIVITY_FILE="/tmp/waiting-activity-$SESSION_ID"
+ACTIVITY_FILE="/tmp/waiting-activity-stop-$SESSION_ID"
+STOP_TIME_FILE="/tmp/waiting-stop-time-$SESSION_ID"
+
+# Kill any existing wait/nag process for THIS session
+if [ -f "$PID_FILE" ]; then
+    old_pid=$(cat "$PID_FILE" 2>/dev/null)
+    if [ -n "$old_pid" ]; then
+        kill "$old_pid" 2>/dev/null
+        pkill -P "$old_pid" 2>/dev/null
+    fi
+    rm -f "$PID_FILE"
+fi
+
+# Record when Stop fired
+stop_time=$(date +%s)
+echo "$stop_time" > "$STOP_TIME_FILE"
+
+play_sound() {{
+    # Volume: {volume}% (paplay uses 0-65536, afplay/pw-play use 0.0-1.0)
+    PAPLAY_VOL=$((65536 * {volume} / 100))
+    FLOAT_VOL=$(awk "BEGIN {{printf \\"%.2f\\", {volume}/100}}")
+
+    if command -v paplay &> /dev/null; then
+        paplay --volume=$PAPLAY_VOL "{audio_path}" 2>/dev/null
+    elif command -v pw-play &> /dev/null; then
+        pw-play --volume=$FLOAT_VOL "{audio_path}" 2>/dev/null
+    elif command -v aplay &> /dev/null; then
+        # aplay doesn't support volume control directly
+        aplay -q "{audio_path}" 2>/dev/null
+    elif command -v afplay &> /dev/null; then
+        afplay -v $FLOAT_VOL "{audio_path}" 2>/dev/null
+    elif command -v powershell.exe &> /dev/null; then
+        win_path=$(wslpath -w "{audio_path}" 2>/dev/null)
+        if [ -n "$win_path" ]; then
+            powershell.exe -c "(New-Object Media.SoundPlayer '$win_path').PlaySync()" 2>/dev/null
+        else
+            powershell.exe -c "(New-Object Media.SoundPlayer 'C:\\Windows\\Media\\notify.wav').PlaySync()" 2>/dev/null
+        fi
+    fi
+}}
+
+# Start background "wait and see" process
+(
+    # Wait for grace period before checking
+    sleep "$GRACE_PERIOD"
+
+    # Check if user had any activity since Stop fired
+    stop_time=$(cat "$STOP_TIME_FILE" 2>/dev/null || echo 0)
+    last_activity=$(cat "$ACTIVITY_FILE" 2>/dev/null || echo 0)
+
+    if [ "$last_activity" -gt "$stop_time" ]; then
+        # User was active after Stop fired, no bell needed
+        rm -f "$STOP_TIME_FILE"
+        rm -f "$PID_FILE"
+        exit 0
+    fi
+
+    # User hasn't done anything since Stop fired - they're AFK
+    play_sound
+
+    # Start nag loop if interval > 0
+    if [ "$INTERVAL" -gt 0 ]; then
+        # Max lifetime: 2 hours (prevents orphaned nag loops while allowing long breaks)
+        MAX_LIFETIME=7200
+        START_TIME=$(date +%s)
+        count=0
+        while true; do
+            sleep "$INTERVAL"
+
+            # Safety: exit if we've been running too long (orphaned process)
+            NOW=$(date +%s)
+            ELAPSED=$((NOW - START_TIME))
+            if [ "$ELAPSED" -ge "$MAX_LIFETIME" ]; then
+                break
+            fi
+
+            # Re-check activity in case user came back
+            last_activity=$(cat "$ACTIVITY_FILE" 2>/dev/null || echo 0)
+            stop_time=$(cat "$STOP_TIME_FILE" 2>/dev/null || echo 0)
+            if [ "$last_activity" -gt "$stop_time" ]; then
+                break
+            fi
+
+            play_sound
+            count=$((count + 1))
+            if [ "$MAX_NAGS" -gt 0 ] && [ "$count" -ge "$MAX_NAGS" ]; then
+                break
+            fi
+        done
+    fi
+
+    rm -f "$STOP_TIME_FILE"
+    rm -f "$PID_FILE"
+) &
+
+# Save PID of background process
+echo $! > "$PID_FILE"
+"""
+
+    with open(script_path, "w") as f:
+        f.write(script_content)
+
+    script_path.chmod(script_path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    return script_path
+
+
+def create_permission_notify_script(
+    audio_path: str,
+    interval: int = 30,
+    max_nags: int = 0,
+    grace_period: int = 10,
+    lookback_window: int = 30,
+) -> Path:
+    """Create the Permission hook notification script with delayed bell.
+
+    The Permission hook creates a pending marker file, then waits grace_period seconds.
+    After the delay, it checks if user was active within lookback_window seconds.
+    The pending file helps PreToolUse distinguish user approvals from auto-approved tools.
+
+    Args:
+        audio_path: Path to the audio file
+        interval: Seconds between repeated notifications (0 = no repeat)
+        max_nags: Maximum number of repeats (0 = unlimited)
+        grace_period: Seconds to wait before playing bell
+        lookback_window: If active in last N seconds, skip bell (handles rapid dialogs)
+    """
+    script_path = get_hooks_dir() / "waiting-notify-permission.sh"
+
+    script_content = f"""#!/bin/bash
+# Waiting - Permission hook with DELAYED bell
+# Checks for recent activity using lookback window
+# Audio file: {audio_path}
+
+INTERVAL={interval}
+MAX_NAGS={max_nags}
+DELAY={grace_period}
+LOOKBACK_WINDOW={lookback_window}
+DEBUG_LOG="/tmp/waiting-debug.log"
+
+# Read hook context from stdin to get session ID
+HOOK_INPUT=$(cat)
+
+# Debug: log when hook fires
+echo "$(date): PermissionRequest fired" >> "$DEBUG_LOG"
+
+SESSION_ID=$(echo "$HOOK_INPUT" | grep -o '"session_id":"[^"]*"' | cut -d'"' -f4)
+
+# Fall back to a hash of the input if no session_id found
+if [ -z "$SESSION_ID" ]; then
+    SESSION_ID=$(echo "$HOOK_INPUT" | md5sum | cut -c1-8)
+fi
+
+echo "  Session: $SESSION_ID, delay: ${{DELAY}}s" >> "$DEBUG_LOG"
+
+# Use session-specific marker for process identification
+NAG_MARKER="waiting-nag-$SESSION_ID"
+PID_FILE="/tmp/$NAG_MARKER.pid"
+PENDING_FILE="/tmp/waiting-pending-$SESSION_ID"
+ACTIVITY_FILE="/tmp/waiting-activity-permission-$SESSION_ID"
+
+# Get current time upfront
+now=$(date +%s)
+
+# Kill ALL existing nag processes for this session
+pkill -f "$NAG_MARKER" 2>/dev/null
+rm -f "$PID_FILE"
+
+# Small delay to ensure old processes are dead
+sleep 0.2
+
+# Create pending marker (tells PreToolUse this is a user approval, not auto-approved)
+echo "$now" > "$PENDING_FILE"
+echo "  Created pending marker: $PENDING_FILE" >> "$DEBUG_LOG"
+
+play_sound() {{
+    if command -v aplay &> /dev/null; then
+        aplay -q "{audio_path}" 2>/dev/null
+    elif command -v paplay &> /dev/null; then
+        paplay "{audio_path}" 2>/dev/null
+    elif command -v pw-play &> /dev/null; then
+        pw-play "{audio_path}" 2>/dev/null
+    elif command -v afplay &> /dev/null; then
+        afplay "{audio_path}" 2>/dev/null
+    elif command -v powershell.exe &> /dev/null; then
+        win_path=$(wslpath -w "{audio_path}" 2>/dev/null)
+        if [ -n "$win_path" ]; then
+            powershell.exe -c "(New-Object Media.SoundPlayer '$win_path').PlaySync()" 2>/dev/null
+        else
+            powershell.exe -c "(New-Object Media.SoundPlayer 'C:\\Windows\\Media\\notify.wav').PlaySync()" 2>/dev/null
+        fi
+    fi
+}}
+
+# Create wrapper script with session marker in filename (so pkill -f can find it)
+NAG_SCRIPT="/tmp/$NAG_MARKER.sh"
+AUDIO_PATH="{audio_path}"
+
+cat > "$NAG_SCRIPT" << NAGEOF
+#!/bin/bash
+DEBUG_LOG="/tmp/waiting-debug.log"
+PID_FILE="$PID_FILE"
+DELAY=$DELAY
+INTERVAL=$INTERVAL
+MAX_NAGS=$MAX_NAGS
+LOOKBACK_WINDOW=$LOOKBACK_WINDOW
+AUDIO_PATH="$AUDIO_PATH"
+ACTIVITY_FILE="$ACTIVITY_FILE"
+START_TIMESTAMP=$now
+
+# Trap SIGTERM for instant kill when PreToolUse runs pkill
+# Also kill any background sound processes
+trap 'echo "  Nag received SIGTERM, exiting" >> "\\$DEBUG_LOG"; kill \\$(jobs -p) 2>/dev/null; rm -f "\\$PID_FILE" "\\$0"; exit 0' TERM
+
+play_sound() {{
+    # Play sound in background (&) so SIGTERM trap can fire immediately during playback
+    if command -v paplay &> /dev/null; then
+        paplay "\\$AUDIO_PATH" 2>/dev/null &
+    elif command -v pw-play &> /dev/null; then
+        pw-play "\\$AUDIO_PATH" 2>/dev/null &
+    elif command -v aplay &> /dev/null; then
+        aplay -q "\\$AUDIO_PATH" 2>/dev/null &
+    elif command -v afplay &> /dev/null; then
+        afplay "\\$AUDIO_PATH" 2>/dev/null &
+    elif command -v powershell.exe &> /dev/null; then
+        win_path=\\$(wslpath -w "\\$AUDIO_PATH" 2>/dev/null)
+        if [ -n "\\$win_path" ]; then
+            powershell.exe -c "(New-Object Media.SoundPlayer '\\$win_path').PlaySync()" 2>/dev/null &
+        fi
+    fi
+}}
+
+echo "  Starting delayed bell (waiting \\${{DELAY}}s)" >> "\\$DEBUG_LOG"
+sleep "\\$DELAY"
+
+if [ ! -f "\\$PID_FILE" ]; then
+    echo "  PID file removed, exiting" >> "\\$DEBUG_LOG"
+    rm -f "\\$0"
+    exit 0
+fi
+
+# Check if user was active within lookback window (handles rapid successive dialogs)
+lookback_threshold=\\$((START_TIMESTAMP - LOOKBACK_WINDOW))
+echo "  Activity check: START_TIMESTAMP=\\$START_TIMESTAMP, lookback_threshold=\\$lookback_threshold (\\${{LOOKBACK_WINDOW}}s window)" >> "\\$DEBUG_LOG"
+
+SKIP_FIRST_BELL=false
+if [ -f "\\$ACTIVITY_FILE" ]; then
+    last_activity=\\$(cat "\\$ACTIVITY_FILE" 2>/dev/null || echo 0)
+    echo "  Activity check: last_activity=\\$last_activity (from \\$ACTIVITY_FILE)" >> "\\$DEBUG_LOG"
+    if [ "\\$last_activity" -gt "\\$lookback_threshold" ]; then
+        echo "  User was active recently (\\$last_activity > \\$lookback_threshold), skipping first bell but continuing to monitor" >> "\\$DEBUG_LOG"
+        SKIP_FIRST_BELL=true
+    else
+        echo "  User was NOT active in lookback window (\\$last_activity <= \\$lookback_threshold)" >> "\\$DEBUG_LOG"
+    fi
+else
+    echo "  Activity check: NO activity file found at \\$ACTIVITY_FILE" >> "\\$DEBUG_LOG"
+fi
+
+if [ "\\$SKIP_FIRST_BELL" = false ]; then
+    echo "  Delay complete, playing first bell" >> "\\$DEBUG_LOG"
+    play_sound
+else
+    echo "  Skipping first bell, entering monitoring mode" >> "\\$DEBUG_LOG"
+fi
+
+if [ "\\$INTERVAL" -eq 0 ]; then
+    rm -f "\\$PID_FILE" "\\$0"
+    exit 0
+fi
+
+MAX_LIFETIME=7200
+LOOP_START=\\$(date +%s)
+count=0
+while true; do
+    # Sleep in 1-second increments, checking PID file frequently
+    # This allows nag to die within 1 second of approval instead of waiting full interval
+    for i in \\$(seq 1 "\\$INTERVAL"); do
+        sleep 1
+        if [ ! -f "\\$PID_FILE" ]; then
+            echo "  PID file removed during sleep, stopping nag" >> "\\$DEBUG_LOG"
+            rm -f "\\$0"
+            exit 0
+        fi
+    done
+
+    NOW=\\$(date +%s)
+    ELAPSED=\\$((NOW - LOOP_START))
+    if [ "\\$ELAPSED" -ge "\\$MAX_LIFETIME" ]; then
+        echo "  Nag loop timeout" >> "\\$DEBUG_LOG"
+        break
+    fi
+    # Check if user responded to THIS dialog (activity after dialog appeared)
+    if [ -f "\\$ACTIVITY_FILE" ]; then
+        last_activity=\\$(cat "\\$ACTIVITY_FILE" 2>/dev/null || echo 0)
+        if [ "\\$last_activity" -gt "\\$START_TIMESTAMP" ]; then
+            echo "  User responded (activity \\$last_activity > start \\$START_TIMESTAMP), stopping nag" >> "\\$DEBUG_LOG"
+            rm -f "\\$PID_FILE" "\\$0"
+            exit 0
+        fi
+    fi
+    echo "  Nag loop: playing bell (iteration \\$count)" >> "\\$DEBUG_LOG"
+    play_sound
+    count=\\$((count + 1))
+    if [ "\\$MAX_NAGS" -gt 0 ] && [ "\\$count" -ge "\\$MAX_NAGS" ]; then
+        break
+    fi
+done
+rm -f "\\$PID_FILE" "\\$0"
+NAGEOF
+
+chmod +x "$NAG_SCRIPT"
+
+# Run the nag script in background (its path contains the marker for pkill -f)
+"$NAG_SCRIPT" &
+
+# Save PID of background process
+echo $! > "$PID_FILE"
+echo "  Background PID: $!" >> "$DEBUG_LOG"
+"""
+
+    with open(script_path, "w") as f:
+        f.write(script_content)
+
+    script_path.chmod(script_path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    return script_path
+
+
+def create_idle_notify_script(
+    audio_path: str,
+    interval: int = 30,
+    max_nags: int = 0,
+    grace_period: int = 0,
+) -> Path:
+    """Create the Idle hook notification script.
+
+    The Idle hook (idle_prompt) already has a 60s built-in delay.
+    This script adds optional additional grace period checking.
+    """
+    script_path = get_hooks_dir() / "waiting-notify-idle.sh"
+
+    script_content = f"""#!/bin/bash
+# Waiting - Idle hook notification
+# idle_prompt already has 60s built-in delay
+# Audio file: {audio_path}
+
+INTERVAL={interval}
+MAX_NAGS={max_nags}
+GRACE_PERIOD={grace_period}
+
+# Read hook context from stdin to get session ID
+HOOK_INPUT=$(cat)
+SESSION_ID=$(echo "$HOOK_INPUT" | grep -o '"session_id":"[^"]*"' | cut -d'"' -f4)
+
+# Fall back to a hash of the input if no session_id found
+if [ -z "$SESSION_ID" ]; then
+    SESSION_ID=$(echo "$HOOK_INPUT" | md5sum | cut -c1-8)
+fi
+
+# Use session-specific files (uses permission activity file)
+PID_FILE="/tmp/waiting-nag-$SESSION_ID.pid"
+ACTIVITY_FILE="/tmp/waiting-activity-permission-$SESSION_ID"
 
 # Check if user was recently active (within grace period)
 if [ "$GRACE_PERIOD" -gt 0 ] && [ -f "$ACTIVITY_FILE" ]; then
@@ -135,7 +505,6 @@ if [ "$GRACE_PERIOD" -gt 0 ] && [ -f "$ACTIVITY_FILE" ]; then
     now=$(date +%s)
     elapsed=$((now - last_activity))
     if [ "$elapsed" -lt "$GRACE_PERIOD" ]; then
-        # User was active recently, skip everything - don't annoy them
         exit 0
     fi
 fi
@@ -172,22 +541,45 @@ play_sound() {{
 # Play immediately
 play_sound
 
-# If interval is 0, just play once and exit (but only if we played)
+# If interval is 0, just play once and exit
 if [ "$INTERVAL" -eq 0 ]; then
     exit 0
 fi
 
+# Record when idle notification fired (for activity comparison)
+IDLE_TIME=$(date +%s)
+
 # Start background nag loop
 (
+    # Max lifetime: 2 hours (prevents orphaned nag loops while allowing long breaks)
+    MAX_LIFETIME=7200
+    START_TIME=$(date +%s)
     count=0
     while true; do
         sleep "$INTERVAL"
+
+        # Safety: exit if we've been running too long (orphaned process)
+        NOW=$(date +%s)
+        ELAPSED=$((NOW - START_TIME))
+        if [ "$ELAPSED" -ge "$MAX_LIFETIME" ]; then
+            break
+        fi
+
+        # Check if user was active since idle notification
+        last_activity=$(cat "$ACTIVITY_FILE" 2>/dev/null || echo 0)
+        if [ "$last_activity" -gt "$IDLE_TIME" ]; then
+            # User responded, stop nagging
+            rm -f "$PID_FILE"
+            exit 0
+        fi
+
         play_sound
         count=$((count + 1))
         if [ "$MAX_NAGS" -gt 0 ] && [ "$count" -ge "$MAX_NAGS" ]; then
             break
         fi
     done
+    rm -f "$PID_FILE"
 ) &
 
 # Save PID of background process
@@ -197,16 +589,37 @@ echo $! > "$PID_FILE"
     with open(script_path, "w") as f:
         f.write(script_content)
 
-    # Make executable
     script_path.chmod(script_path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+    return script_path
 
-    # Create stop script (kills the nag loop and records activity)
-    stop_script_path = get_hooks_dir() / "waiting-stop.sh"
-    stop_content = """#!/bin/bash
-# Stop the waiting nag loop and record user activity
+
+def create_activity_scripts() -> tuple[Path, Path]:
+    """Create activity recording scripts for different hooks.
+
+    Returns:
+        Tuple of (submit_script_path, tooluse_script_path)
+
+    UserPromptSubmit: Records activity + kills nag (user typed a message)
+    PreToolUse: Records activity + kills nag (user approved permission OR auto-approved tool)
+
+    Simplified approach: Both hooks always update activity and kill nag.
+    When permission dialog shows, Claude is blocked - first PreToolUse = user approved.
+    """
+    hooks_dir = get_hooks_dir()
+
+    # Script for UserPromptSubmit - updates activity files AND kills nag
+    submit_script_path = hooks_dir / "waiting-activity-submit.sh"
+    submit_content = """#!/bin/bash
+# Record user activity when submitting a message
+# Updates BOTH Stop and Permission activity files
+
+DEBUG_LOG="/tmp/waiting-debug.log"
 
 # Read hook context from stdin to get session ID
 HOOK_INPUT=$(cat)
+
+echo "$(date): UserPromptSubmit fired" >> "$DEBUG_LOG"
+
 SESSION_ID=$(echo "$HOOK_INPUT" | grep -o '"session_id":"[^"]*"' | cut -d'"' -f4)
 
 # Fall back to a hash of the input if no session_id found
@@ -214,35 +627,99 @@ if [ -z "$SESSION_ID" ]; then
     SESSION_ID=$(echo "$HOOK_INPUT" | md5sum | cut -c1-8)
 fi
 
+echo "  Session: $SESSION_ID" >> "$DEBUG_LOG"
+
 # Use session-specific files
-PID_FILE="/tmp/waiting-nag-$SESSION_ID.pid"
-ACTIVITY_FILE="/tmp/waiting-activity-$SESSION_ID"
+NAG_MARKER="waiting-nag-$SESSION_ID"
+PID_FILE="/tmp/$NAG_MARKER.pid"
+STOP_ACTIVITY="/tmp/waiting-activity-stop-$SESSION_ID"
+PERMISSION_ACTIVITY="/tmp/waiting-activity-permission-$SESSION_ID"
 
-# Record that user was just active
-date +%s > "$ACTIVITY_FILE"
+# Record activity for both hooks
+NOW=$(date +%s)
+# Add 1 second buffer to handle same-second cascading dialogs
+ACTIVITY_TIME=$((NOW + 1))
+echo "$ACTIVITY_TIME" > "$STOP_ACTIVITY"
+echo "$ACTIVITY_TIME" > "$PERMISSION_ACTIVITY"
+echo "  Updated activity: $ACTIVITY_TIME (NOW+1 buffer)" >> "$DEBUG_LOG"
 
-# Kill the nag loop if running for THIS session
-if [ -f "$PID_FILE" ]; then
-    pid=$(cat "$PID_FILE" 2>/dev/null)
-    if [ -n "$pid" ]; then
-        kill "$pid" 2>/dev/null
-        pkill -P "$pid" 2>/dev/null
-    fi
-    rm -f "$PID_FILE"
+# Kill ALL nag processes for this session using the marker (more reliable than PID)
+if pkill -f "$NAG_MARKER" 2>/dev/null; then
+    echo "  Killed nag processes matching: $NAG_MARKER" >> "$DEBUG_LOG"
+else
+    echo "  No nag processes found for: $NAG_MARKER" >> "$DEBUG_LOG"
 fi
-"""
-    with open(stop_script_path, "w") as f:
-        f.write(stop_content)
-    stop_script_path.chmod(stop_script_path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
-    return script_path
+# Clean up PID file and wrapper script
+rm -f "$PID_FILE" "/tmp/$NAG_MARKER.sh"
+"""
+    with open(submit_script_path, "w") as f:
+        f.write(submit_content)
+    submit_script_path.chmod(submit_script_path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+
+    # Script for PreToolUse - kills nag and updates activity
+    # Only updates activity if pending file exists (user approved vs auto-approved)
+    # Rationale: Auto-approved tools fire PreToolUse but shouldn't count as user activity
+    tooluse_script_path = hooks_dir / "waiting-activity-tooluse.sh"
+    tooluse_content = """#!/bin/bash
+# Kill nag loop when tool executes and update activity
+# Uses pending file to distinguish user approvals from auto-approved tools
+
+DEBUG_LOG="/tmp/waiting-debug.log"
+
+# Read hook context from stdin to get session ID
+HOOK_INPUT=$(cat)
+
+echo "$(date): PreToolUse fired" >> "$DEBUG_LOG"
+
+SESSION_ID=$(echo "$HOOK_INPUT" | grep -o '"session_id":"[^"]*"' | cut -d'"' -f4)
+
+# Fall back to a hash of the input if no session_id found
+if [ -z "$SESSION_ID" ]; then
+    SESSION_ID=$(echo "$HOOK_INPUT" | md5sum | cut -c1-8)
+fi
+
+echo "  Session: $SESSION_ID" >> "$DEBUG_LOG"
+
+NAG_MARKER="waiting-nag-$SESSION_ID"
+PID_FILE="/tmp/$NAG_MARKER.pid"
+PENDING_FILE="/tmp/waiting-pending-$SESSION_ID"
+ACTIVITY_FILE="/tmp/waiting-activity-permission-$SESSION_ID"
+
+# Only update activity if there's a pending permission (user approved, not auto-approved)
+if [ -f "$PENDING_FILE" ]; then
+    NOW=$(date +%s)
+    # Add 1 second buffer to handle same-second cascading dialogs
+    ACTIVITY_TIME=$((NOW + 1))
+    echo "$ACTIVITY_TIME" > "$ACTIVITY_FILE"
+    rm -f "$PENDING_FILE"
+    echo "  User approved permission, updated activity: $ACTIVITY_TIME (NOW+1 buffer)" >> "$DEBUG_LOG"
+else
+    echo "  Auto-approved tool, no activity update" >> "$DEBUG_LOG"
+fi
+
+# Kill ALL nag processes for this session
+if pkill -f "$NAG_MARKER" 2>/dev/null; then
+    echo "  Killed nag: $NAG_MARKER" >> "$DEBUG_LOG"
+else
+    echo "  No nag processes found" >> "$DEBUG_LOG"
+fi
+
+# Clean up PID file and wrapper script
+rm -f "$PID_FILE" "/tmp/$NAG_MARKER.sh"
+"""
+    with open(tooluse_script_path, "w") as f:
+        f.write(tooluse_content)
+    tooluse_script_path.chmod(tooluse_script_path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+
+    return submit_script_path, tooluse_script_path
 
 
 def _is_waiting_hook(hook_config: dict) -> bool:
     """Check if a hook config is one of ours."""
     for hook in hook_config.get("hooks", []):
         cmd = hook.get("command", "")
-        if "waiting-notify" in cmd or "waiting-stop" in cmd:
+        if "waiting-notify" in cmd or "waiting-stop" in cmd or "waiting-activity" in cmd:
             return True
     return False
 
@@ -251,20 +728,23 @@ def setup_hooks(
     stop_script_path: Path,
     permission_script_path: Path,
     idle_script_path: Path,
-    user_stop_script: Path,
+    submit_activity_script: Path,
+    tooluse_script: Path,
     enabled_hooks: list[str]
 ) -> None:
-    """Add notification hooks to Claude settings with per-hook scripts."""
+    """Add notification hooks to Claude settings with per-hook scripts.
+
+    Activity tracking (simplified approach):
+    - UserPromptSubmit → updates activity files + kills nag (user typed message)
+    - PreToolUse → updates activity files + kills nag (any tool execution)
+
+    Both hooks always update activity and kill nag. When permission dialog shows,
+    Claude is blocked, so first PreToolUse after PermissionRequest = user approved.
+    """
     settings = load_claude_settings()
 
     if "hooks" not in settings:
         settings["hooks"] = {}
-
-    stop_config = {
-        "type": "command",
-        "command": str(user_stop_script),
-        "timeout": 5
-    }
 
     # PermissionRequest - fires when Claude shows a permission dialog
     if "PermissionRequest" not in settings["hooks"]:
@@ -323,7 +803,7 @@ def setup_hooks(
     if not settings["hooks"]["Notification"]:
         del settings["hooks"]["Notification"]
 
-    # Stop nagging when user submits a prompt (always enabled)
+    # UserPromptSubmit - record activity for BOTH hooks (always enabled)
     if "UserPromptSubmit" not in settings["hooks"]:
         settings["hooks"]["UserPromptSubmit"] = []
     settings["hooks"]["UserPromptSubmit"] = [
@@ -332,10 +812,15 @@ def setup_hooks(
     ]
     settings["hooks"]["UserPromptSubmit"].append({
         "matcher": "",
-        "hooks": [stop_config.copy()]
+        "hooks": [{
+            "type": "command",
+            "command": str(submit_activity_script),
+            "timeout": 5
+        }]
     })
 
-    # PreToolUse - record activity when user approves a tool (always enabled)
+    # PreToolUse - kills nag loop when any tool executes (user approved or auto-approved)
+    # Does NOT update activity file (that's UserPromptSubmit's job)
     if "PreToolUse" not in settings["hooks"]:
         settings["hooks"]["PreToolUse"] = []
     settings["hooks"]["PreToolUse"] = [
@@ -344,10 +829,14 @@ def setup_hooks(
     ]
     settings["hooks"]["PreToolUse"].append({
         "matcher": "",
-        "hooks": [stop_config.copy()]
+        "hooks": [{
+            "type": "command",
+            "command": str(tooluse_script),
+            "timeout": 5
+        }]
     })
 
-    # Clean up old PostToolUse hooks from previous versions
+    # Clean up old hooks from previous versions
     for old_hook_type in ["PostToolUse"]:
         if old_hook_type in settings["hooks"]:
             settings["hooks"][old_hook_type] = [
@@ -413,6 +902,9 @@ def cli(ctx, audio: str | None, interval: int | None, max_nags: int | None):
         grace_permission = config.get("grace_period_permission", DEFAULT_CONFIG["grace_period_permission"])
         grace_idle = config.get("grace_period_idle", DEFAULT_CONFIG["grace_period_idle"])
 
+        # Lookback window for rapid successive permissions
+        lookback_window = config.get("lookback_window", DEFAULT_CONFIG["lookback_window"])
+
         # Enabled hooks
         enabled_hooks = config.get("enabled_hooks", DEFAULT_CONFIG["enabled_hooks"])
 
@@ -435,21 +927,22 @@ def cli(ctx, audio: str | None, interval: int | None, max_nags: int | None):
             click.echo(f"    Stop hook: {grace_stop}s ({grace_stop // 60}min)")
         if "permission" in enabled_hooks:
             click.echo(f"    Permission hook: {grace_permission}s")
+            click.echo(f"    Lookback window: {lookback_window}s (for rapid successive dialogs)")
         if "idle" in enabled_hooks:
             click.echo(f"    Idle hook: {grace_idle}s")
 
         # Create per-hook notify scripts
-        stop_script = create_notify_script(audio_path, interval, max_nags, grace_stop, "stop")
-        permission_script = create_notify_script(audio_path, interval, max_nags, grace_permission, "permission")
-        idle_script = create_notify_script(audio_path, interval, max_nags, grace_idle, "idle")
+        stop_script = create_stop_notify_script(audio_path, interval, max_nags, grace_stop)
+        permission_script = create_permission_notify_script(audio_path, interval, max_nags, grace_permission, lookback_window)
+        idle_script = create_idle_notify_script(audio_path, interval, max_nags, grace_idle)
 
-        # The user stop script is created by create_notify_script as a side effect
-        user_stop_script = get_hooks_dir() / "waiting-stop.sh"
+        # Create activity recording scripts
+        submit_activity_script, tooluse_script = create_activity_scripts()
 
         click.echo(f"  Scripts: {get_hooks_dir()}")
 
         # Add hooks to Claude settings
-        setup_hooks(stop_script, permission_script, idle_script, user_stop_script, enabled_hooks)
+        setup_hooks(stop_script, permission_script, idle_script, submit_activity_script, tooluse_script, enabled_hooks)
         click.echo(f"  Hooks: {get_claude_settings_path()}")
 
         click.echo()
@@ -457,9 +950,9 @@ def cli(ctx, audio: str | None, interval: int | None, max_nags: int | None):
         click.echo()
         click.echo("Behavior:")
         if "stop" in enabled_hooks:
-            click.echo(f"  - Stop hook: alerts after {grace_stop}s ({grace_stop // 60}min) of inactivity")
+            click.echo(f"  - Stop hook: waits {grace_stop}s ({grace_stop // 60}min), then alerts if you haven't typed")
         if "permission" in enabled_hooks:
-            click.echo(f"  - Permission hook: alerts after {grace_permission}s of inactivity")
+            click.echo(f"  - Permission hook: alerts immediately if no activity in last {grace_permission}s")
         if "idle" in enabled_hooks:
             click.echo(f"  - Idle hook: alerts after 60s idle (built-in)")
         click.echo("  - Plays sound when Claude needs input")
@@ -473,11 +966,12 @@ def disable():
     """Disable waiting notifications."""
     remove_hook()
 
-    # Remove all scripts (including per-hook variants)
+    # Remove all scripts (including per-hook variants and activity scripts)
     script_patterns = [
         "waiting-notify.sh",
         "waiting-notify-*.sh",
         "waiting-stop.sh",
+        "waiting-activity-*.sh",
     ]
     hooks_dir = get_hooks_dir()
     for pattern in script_patterns:
@@ -535,7 +1029,7 @@ def _kill_nag_process() -> bool:
     # Kill any orphaned waiting-notify processes that might not have PID files
     try:
         result = subprocess.run(
-            ["pkill", "-f", "waiting-notify.sh"],
+            ["pkill", "-f", "waiting-notify"],
             capture_output=True
         )
         if result.returncode == 0:
@@ -546,12 +1040,22 @@ def _kill_nag_process() -> bool:
     # Update activity files so grace period kicks in
     import time
     now = str(int(time.time()))
-    for activity_file in tmp_dir.glob("waiting-activity-*"):
+    # New format: separate files for stop and permission
+    for activity_file in tmp_dir.glob("waiting-activity-stop-*"):
         activity_file.write_text(now)
-    # Legacy activity file
+    for activity_file in tmp_dir.glob("waiting-activity-permission-*"):
+        activity_file.write_text(now)
+    # Legacy format
+    for activity_file in tmp_dir.glob("waiting-activity-*"):
+        if "stop" not in activity_file.name and "permission" not in activity_file.name:
+            activity_file.write_text(now)
     legacy_activity = tmp_dir / "waiting-last-activity"
     if legacy_activity.exists():
         legacy_activity.write_text(now)
+
+    # Clean up stop-time files
+    for stop_time_file in tmp_dir.glob("waiting-stop-time-*"):
+        stop_time_file.unlink(missing_ok=True)
 
     return killed
 
@@ -604,7 +1108,9 @@ def status():
             click.echo(f"  Stop: {gs}s ({gs // 60}min)")
         if "permission" in active_hooks:
             gp = config.get('grace_period_permission', DEFAULT_CONFIG['grace_period_permission'])
+            lw = config.get('lookback_window', DEFAULT_CONFIG['lookback_window'])
             click.echo(f"  Permission: {gp}s")
+            click.echo(f"  Lookback window: {lw}s (for rapid successive dialogs)")
         if "idle" in active_hooks:
             gi = config.get('grace_period_idle', DEFAULT_CONFIG['grace_period_idle'])
             click.echo(f"  Idle: {gi}s (+ 60s built-in)")

@@ -1,0 +1,14 @@
+Testing Session 4 Fix #5: Continuous Monitoring
+
+Problem Fixed:
+- Lookback window caused nag to EXIT entirely if user was recently active
+- User could sit at permission dialog for 20 minutes with no bell
+
+New Behavior:
+- If user active in last 30s → skip FIRST bell, but keep monitoring
+- Nag loop checks: "Did user respond to THIS dialog?" (activity > START_TIMESTAMP)
+- If user goes AFK → bells start playing
+
+Test timestamp: 2026-01-03 19:00
+Expected: Bell plays after 10s (you were active recently from this message)
+Then: Approve it and bell should stop instantly
