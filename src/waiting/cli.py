@@ -256,7 +256,7 @@ PID_FILE="$4"
 PENDING_FILE="$5"
 ACTIVITY_FILE="$6"
 
-start_time=$(date +%s)
+start_time=$(($(date +%s) + 2))  # +2 to avoid race with PreToolUse's +1 buffer
 nag_count=0
 max_lifetime=600  # 10 minute orphan protection
 
