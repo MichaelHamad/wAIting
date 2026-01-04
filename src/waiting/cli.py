@@ -141,6 +141,11 @@ HEARTBEAT_FILE="/tmp/waiting-heartbeat-$SESSION_ID"
 # How long without a heartbeat before we assume Claude is dead (2 minutes)
 HEARTBEAT_TIMEOUT=120
 
+# Check if Claude is still running
+is_claude_alive() {{
+    pgrep -f "claude" > /dev/null 2>&1
+}}
+
 # Update heartbeat (proves Claude is alive)
 echo "$(date +%s)" > "$HEARTBEAT_FILE"
 
@@ -208,7 +213,14 @@ play_sound() {{
         START_TIME=$(date +%s)
         count=0
         while true; do
-            sleep "$INTERVAL"
+            # Sleep in 1-second increments, checking if Claude dies
+            for i in $(seq 1 "$INTERVAL"); do
+                sleep 1
+                if ! is_claude_alive; then
+                    rm -f "$STOP_TIME_FILE" "$PID_FILE"
+                    exit 0
+                fi
+            done
 
             # Safety: exit if we've been running too long (orphaned process)
             NOW=$(date +%s)
@@ -363,6 +375,11 @@ START_TIMESTAMP=$now
 # How long without a heartbeat before we assume Claude is dead (2 minutes)
 HEARTBEAT_TIMEOUT=120
 
+# Check if Claude is still running (any node process with 'claude' in cmdline)
+is_claude_alive() {{
+    pgrep -f "claude" > /dev/null 2>&1
+}}
+
 # Trap SIGTERM for instant kill when PreToolUse runs pkill
 # Also kill any background sound processes
 trap 'echo "  Nag received SIGTERM, exiting" >> "\\$DEBUG_LOG"; kill \\$(jobs -p) 2>/dev/null; rm -f "\\$PID_FILE" "\\$0"; exit 0' TERM
@@ -386,7 +403,16 @@ play_sound() {{
 }}
 
 echo "  Starting delayed bell (waiting \\${{DELAY}}s)" >> "\\$DEBUG_LOG"
-sleep "\\$DELAY"
+
+# Sleep in 1-second increments during grace period, checking if Claude dies
+for i in \\$(seq 1 "\\$DELAY"); do
+    sleep 1
+    if ! is_claude_alive; then
+        echo "  Claude process not found during delay, exiting" >> "\\$DEBUG_LOG"
+        rm -f "\\$PID_FILE" "\\$0"
+        exit 0
+    fi
+done
 
 if [ ! -f "\\$PID_FILE" ]; then
     echo "  PID file removed, exiting" >> "\\$DEBUG_LOG"
@@ -425,13 +451,18 @@ MAX_LIFETIME=600
 LOOP_START=\\$(date +%s)
 count=0
 while true; do
-    # Sleep in 1-second increments, checking PID file frequently
-    # This allows nag to die within 1 second of approval instead of waiting full interval
+    # Sleep in 1-second increments, checking if we should exit
     for i in \\$(seq 1 "\\$INTERVAL"); do
         sleep 1
         if [ ! -f "\\$PID_FILE" ]; then
-            echo "  PID file removed during sleep, stopping nag" >> "\\$DEBUG_LOG"
+            echo "  PID file removed, stopping nag" >> "\\$DEBUG_LOG"
             rm -f "\\$0"
+            exit 0
+        fi
+        # Check if Claude is still running every second
+        if ! is_claude_alive; then
+            echo "  Claude process not found, exiting" >> "\\$DEBUG_LOG"
+            rm -f "\\$PID_FILE" "\\$0"
             exit 0
         fi
     done
@@ -529,6 +560,11 @@ HEARTBEAT_FILE="/tmp/waiting-heartbeat-$SESSION_ID"
 # How long without a heartbeat before we assume Claude is dead (2 minutes)
 HEARTBEAT_TIMEOUT=120
 
+# Check if Claude is still running
+is_claude_alive() {{
+    pgrep -f "claude" > /dev/null 2>&1
+}}
+
 # Update heartbeat (proves Claude is alive)
 echo "$(date +%s)" > "$HEARTBEAT_FILE"
 
@@ -589,7 +625,14 @@ IDLE_TIME=$(date +%s)
     START_TIME=$(date +%s)
     count=0
     while true; do
-        sleep "$INTERVAL"
+        # Sleep in 1-second increments, checking if Claude dies
+        for i in $(seq 1 "$INTERVAL"); do
+            sleep 1
+            if ! is_claude_alive; then
+                rm -f "$PID_FILE"
+                exit 0
+            fi
+        done
 
         # Safety: exit if we've been running too long (orphaned process)
         NOW=$(date +%s)
