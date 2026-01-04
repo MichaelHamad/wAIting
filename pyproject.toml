@@ -5,11 +5,9 @@ build-backend = "hatchling.build"
 [project]
 name = "waiting"
 version = "0.1.0"
-description = "Notify when your AI coding assistant is waiting for input"
+description = "Notify when Claude Code needs permission"
 requires-python = ">=3.9"
-dependencies = [
-    "click>=8.0.0",
-]
+dependencies = ["click>=8.0.0"]
 
 [project.scripts]
 waiting = "waiting.cli:cli"
@@ -17,6 +15,3 @@ waiting = "waiting.cli:cli"
 [tool.hatch.build.targets.wheel]
 packages = ["src/waiting"]
 artifacts = ["src/waiting/*.wav"]
-
-[tool.hatch.build.targets.sdist]
-include = ["src/waiting/*.wav"]
