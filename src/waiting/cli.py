@@ -47,7 +47,7 @@ def get_audio_path() -> str:
     config = load_config()
     if config["audio"] != "default" and Path(config["audio"]).exists():
         return str(Path(config["audio"]).resolve())
-    return str(Path(__file__).parent / "bell.wav")
+    return str(Path(__file__).parent / "Cool_bell.wav")
 
 
 def get_audio_command(audio_path: str, volume: int) -> str:
