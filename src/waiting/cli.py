@@ -23,7 +23,7 @@ DEFAULT_CONFIG = {
     "interval": 30,
     "max_nags": 0,
     "volume": 100,
-    "enabled_hooks": ["stop", "permission", "idle"],
+    "enabled_hooks": ["stop", "idle"],
     "grace_period_stop": 300,
     "grace_period_permission": 10,
     "grace_period_idle": 0,

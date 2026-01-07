@@ -111,7 +111,7 @@ Handles loading and saving user preferences.
   "interval": 30,                  // Seconds between bell repeats
   "max_nags": 0,                   // Max repeats (0 = unlimited)
   "volume": 100,                   // Volume percentage 1-100
-  "enabled_hooks": ["stop", "permission", "idle"],
+  "enabled_hooks": ["stop", "idle"],  // Most reliable hooks (permission optional)
   "grace_period_stop": 300,        // Seconds before bell (Stop hook)
   "grace_period_permission": 10,   // Seconds before bell (Permission hook)
   "grace_period_idle": 0           // Extra seconds (Idle hook)
@@ -424,7 +424,7 @@ Multiple safeguards prevent stale nag processes:
   "interval": 30,
   "max_nags": 0,
   "volume": 100,
-  "enabled_hooks": ["stop", "permission", "idle"],
+  "enabled_hooks": ["stop", "idle"],
   "grace_period_stop": 300,
   "grace_period_permission": 10,
   "grace_period_idle": 0

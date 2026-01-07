@@ -102,3 +102,29 @@ Session-specific files in `/tmp/`:
 - `waiting-activity-permission-{session_id}` - Last activity timestamp
 - `waiting-nag-{session_id}.pid` - Nag process PID
 - `waiting-nag-{session_id}.sh` - Generated nag script
+
+---
+
+## Resolution
+
+### Issue Understood: Permission Hook Limitations
+
+The permission hook is now **not enabled by default** because:
+
+1. **Most tools are auto-approved** - When tools are auto-approved via Claude Code settings, `PermissionRequest` hook does NOT fire (only `PreToolUse` fires)
+2. **This is expected behavior** - The hook correctly fires only when there's an actual permission dialog shown to the user
+3. **Stop and Idle hooks are more reliable** - They fire regardless of auto-approve settings
+
+### Changes Made
+
+- Default `enabled_hooks` changed from `["stop", "permission", "idle"]` to `["stop", "idle"]`
+- Documentation updated to explain this behavior
+- Permission hook still available via `waiting configure --enable-hook permission`
+
+### For Users Who Want Permission Alerts
+
+If you frequently encounter permission dialogs (minimal auto-approve rules), enable the permission hook:
+
+```bash
+waiting configure --enable-hook permission
+```

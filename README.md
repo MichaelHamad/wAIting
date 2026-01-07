@@ -73,7 +73,7 @@ All configuration is stored in `~/.waiting.json`. You can modify settings in thr
 
 | Option | Default | CLI Flags | Description | Example |
 |--------|---------|-----------|-------------|---------|
-| `enabled_hooks` | `["stop", "permission", "idle"]` | `--enable-hook`, `--disable-hook`, `--hooks` | Which event types trigger alerts | `waiting configure --disable-hook stop` |
+| `enabled_hooks` | `["stop", "idle"]` | `--enable-hook`, `--disable-hook`, `--hooks` | Which event types trigger alerts | `waiting configure --enable-hook permission` |
 
 ### Configuration Examples
 
@@ -101,11 +101,12 @@ waiting configure \
 # Result: Waits longer, alerts less frequently, stops after 3 rings
 ```
 
-#### Scenario 3: Only Care About Permissions
+#### Scenario 3: Enable Permission Alerts (in addition to defaults)
 ```bash
-waiting configure --hooks permission
+waiting configure --enable-hook permission
 
-# Result: Only alerts for permission dialogs, ignores stops and idle
+# Result: Alerts for stop, idle, AND permission dialogs
+# Note: Permission hook only fires for non-auto-approved tools
 ```
 
 #### Scenario 4: Only Alert When Idle
@@ -130,7 +131,7 @@ waiting configure --volume 20 --interval 90
   "interval": 30,
   "max_nags": 0,
   "volume": 100,
-  "enabled_hooks": ["stop", "permission", "idle"],
+  "enabled_hooks": ["stop", "idle"],
   "grace_period_stop": 300,
   "grace_period_permission": 10,
   "grace_period_idle": 0
@@ -174,7 +175,7 @@ waiting configure --volume 75 --interval 60 --grace-stop 120
   "interval": 30,                              // Bell repeats every 30 seconds
   "max_nags": 0,                               // No limit on bell repeats
   "volume": 100,                               // Full volume
-  "enabled_hooks": ["stop", "permission", "idle"], // All alerts enabled
+  "enabled_hooks": ["stop", "idle"],           // Most reliable hooks enabled
   "grace_period_stop": 300,                    // 5 min wait after Claude finishes
   "grace_period_permission": 10,               // 10 sec wait after permission prompt
   "grace_period_idle": 0                       // No extra wait after idle (60 sec built-in)
@@ -191,6 +192,8 @@ Three types of Claude Code events can trigger notifications:
 **Grace period:** 10 seconds (default)
 
 **Use case:** You stepped away and Claude is waiting for approval. After 10 seconds of no response, bell plays.
+
+> **Note:** The permission hook only fires for tools that require manual approval. If you have auto-approve rules enabled (which is common), most tools will be approved automatically and this hook won't fire. For this reason, it's not enabled by default. Enable it with `waiting configure --enable-hook permission` if you frequently encounter permission dialogs.
 
 ### Stop Hook (`stop`)
 **Triggers when:** Claude finishes responding
