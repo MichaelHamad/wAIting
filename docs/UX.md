@@ -14,11 +14,16 @@ Waiting plays a bell sound when Claude Code needs your attention and you're not 
 
 After running `waiting` and restarting Claude Code:
 
-| Event | Bell Plays? | After How Long? |
-|-------|-------------|-----------------|
-| Claude finishes a response | Yes | 5 minutes of no activity |
-| Claude idle at prompt for 60s | Yes | Immediately |
-| Permission dialog appears | No | (not enabled by default) |
+| Event | Bell Plays? | Repeats? |
+|-------|-------------|----------|
+| Claude finishes a response | Yes (after grace period) | Yes, every 30s |
+| Claude idle at prompt for 60s | Yes (after grace period) | Yes, every 30s |
+| Permission dialog appears | No (not enabled) | N/A |
+
+**Default settings:**
+- Grace period: 30 seconds
+- Interval: 30 seconds between repeats
+- Enabled hooks: stop, idle
 
 ### Why These Defaults?
 
@@ -38,13 +43,11 @@ After running `waiting` and restarting Claude Code:
 You: "Refactor this codebase"
 Claude: [works for 10 minutes, finishes]
 You: [AFK getting coffee]
-...5 minutes pass...
+...grace period passes...
 🔔 Bell plays - "Claude is done!"
 ```
 
-**Grace period:** 5 minutes (configurable)
-
-The 5-minute wait prevents annoying you during active conversation. Bell only plays if you're truly AFK.
+Bell only plays if you're AFK. Repeats every `interval` seconds until you respond.
 
 ---
 
@@ -56,11 +59,11 @@ The 5-minute wait prevents annoying you during active conversation. Bell only pl
 ```
 Claude: "Should I proceed with option A or B?"
 You: [reading, then get distracted]
-...60 seconds pass...
+...60 seconds pass (built into Claude) + grace period...
 🔔 Bell plays - "Claude is waiting for you!"
 ```
 
-**Grace period:** 0 seconds (60s wait is built into Claude Code)
+Note: Claude's idle detection has a built-in 60-second delay before firing.
 
 ---
 
@@ -73,15 +76,18 @@ You: [reading, then get distracted]
 Claude: [wants to run a command]
 Dialog: "Allow Bash: rm -rf node_modules?"
 You: [AFK]
-...10 seconds pass...
-🔔 Bell plays - "Claude needs permission!"
+...grace period passes...
+🔔 Bell plays once - "Claude needs permission!"
+(no repeat - single alert only)
 ```
 
-**Grace period:** 10 seconds (configurable)
+**Repeats:** No - plays once and exits
 
-**Why not default?** Most users have auto-approve rules. When tools are auto-approved, this hook never fires - creating false expectations.
+**Why single bell?** Permission dialogs are time-sensitive. A single alert is sufficient.
 
-**Enable if:** You have strict permission settings and frequently see permission dialogs.
+**Why not default?** Most users have auto-approve rules. When tools are auto-approved, this hook never fires.
+
+**Enable with:**
 
 ```bash
 waiting configure --enable-hook permission
@@ -128,10 +134,10 @@ waiting status           # See what's active
 
 ```bash
 # Less aggressive (longer waits, quieter)
-waiting configure --grace-stop 600 --interval 120 --volume 50
+waiting configure --grace-period 120 --interval 60 --volume 50
 
 # More aggressive (shorter waits, frequent bells)
-waiting configure --grace-stop 60 --interval 15
+waiting configure --grace-period 10 --interval 15
 
 # Limit bell repeats
 waiting configure --max-nags 3   # Stop after 3 bells
@@ -227,18 +233,14 @@ Hook version: 2.3.0                       # Version of installed hooks
 Latest version: 2.3.0                     # Version in code (should match)
 
 Running nags: 0                           # Active bell processes
-Orphaned files: 0                         # Stale temp files
 
 Configuration:
   Audio: default                          # Using bundled bell.wav
+  Grace period: 30s                       # Wait before first bell
   Interval: 30s                           # Bell repeats every 30s
   Max nags: 0 (0=unlimited)               # No limit on repeats
   Volume: 100%                            # Full volume
   Enabled hooks: stop, idle               # Active hook types
-  Grace periods:
-    stop: 300s                            # 5 min after Claude finishes
-    permission: 10s                       # 10 sec after permission dialog
-    idle: 0s                              # Immediate (60s built into Claude)
 ```
 
 ---
@@ -267,10 +269,10 @@ Orphan protection kicks in:
 
 ## Summary: When Will I Hear a Bell?
 
-| Situation | Default Config |
-|-----------|---------------|
-| Claude finished, I'm AFK for 5+ min | 🔔 Yes |
-| Claude waiting at prompt for 60+ sec | 🔔 Yes |
-| Permission dialog, I'm AFK for 10+ sec | ❌ No (enable with `--enable-hook permission`) |
-| I'm actively chatting with Claude | ❌ No (grace periods prevent this) |
-| I responded before grace period ended | ❌ No (activity detected) |
+| Situation | Default Config | Repeats? |
+|-----------|---------------|----------|
+| Claude finished, I'm AFK for 30+ sec | 🔔 Yes | Every 30s |
+| Claude waiting at prompt for 60+ sec | 🔔 Yes | Every 30s |
+| Permission dialog appears | ❌ No (opt-in) | Once only |
+| I'm actively chatting with Claude | ❌ No | N/A |
+| I responded before grace period ended | ❌ No | N/A |

@@ -1,8 +1,8 @@
 # waiting
 
-🔔 Plays a sound notification when Claude Code needs your attention and you're not responding.
+Plays a sound notification when Claude Code needs your attention and you're not responding.
 
-Perfect for when you step away from your desk while Claude is working on a long task. Waiting will alert you when Claude finishes, needs permission for a tool, or has been idle for too long.
+Perfect for when you step away from your desk while Claude is working on a long task.
 
 ## Quick Start
 
@@ -10,7 +10,7 @@ Perfect for when you step away from your desk while Claude is working on a long 
 # Install
 pip install -e .
 
-# Enable notifications (default settings)
+# Enable notifications
 waiting
 
 # Restart Claude Code for hooks to take effect
@@ -21,301 +21,128 @@ That's it! You'll now get audio alerts when Claude needs you.
 ## Usage
 
 ```bash
-waiting                  # Enable notifications with current config
+waiting                  # Enable notifications
 waiting disable          # Disable all notifications
-waiting status           # View current config and hook status
-waiting kill             # Stop current alert (doesn't disable notifications)
-waiting configure --show # View full configuration as JSON
+waiting status           # View current config
+waiting kill             # Stop current alert
+waiting configure --show # View full config as JSON
 ```
 
-**Important:** Restart Claude Code after enabling/disabling to activate the hooks.
+**Important:** Restart Claude Code after enabling/disabling.
 
 ## Configuration
 
-All configuration is stored in `~/.waiting.json`. You can modify settings in three ways:
-
-1. **Via CLI** (easiest):
-   ```bash
-   waiting configure --volume 50 --interval 60
-   ```
-
-2. **Edit directly**:
-   ```bash
-   nano ~/.waiting.json
-   ```
-
-3. **View current settings**:
-   ```bash
-   waiting configure --show
-   waiting status
-   ```
-
-### Configuration Reference
-
-#### Sound Settings
-
-| Option | Default | CLI Flag | Description | Example |
-|--------|---------|----------|-------------|---------|
-| `audio` | `"default"` | `--audio` | Sound file path or `"default"` for bundled bell | `waiting configure --audio /path/to/sound.wav` |
-| `volume` | `100` | `--volume` | Volume percentage (1-100) | `waiting configure --volume 75` |
-
-#### Timing Settings
-
-| Option | Default | CLI Flag | Description | Example |
-|--------|---------|----------|-------------|---------|
-| `interval` | `30` | `--interval` | Seconds between bell repeats | `waiting configure --interval 45` |
-| `max_nags` | `0` | `--max-nags` | Max bell repeats (0 = unlimited) | `waiting configure --max-nags 5` |
-| `grace_period_stop` | `300` | `--grace-stop` | Seconds to wait after Claude finishes | `waiting configure --grace-stop 120` |
-| `grace_period_permission` | `10` | `--grace-permission` | Seconds to wait after permission dialog | `waiting configure --grace-permission 5` |
-| `grace_period_idle` | `0` | `--grace-idle` | Extra seconds after idle timeout | `waiting configure --grace-idle 10` |
-
-#### Hook Control
-
-| Option | Default | CLI Flags | Description | Example |
-|--------|---------|-----------|-------------|---------|
-| `enabled_hooks` | `["stop", "idle"]` | `--enable-hook`, `--disable-hook`, `--hooks` | Which event types trigger alerts | `waiting configure --enable-hook permission` |
-
-### Configuration Examples
-
-#### Scenario 1: Aggressive Alerts (Don't Miss Anything)
-```bash
-waiting configure \
-  --grace-stop 30 \
-  --grace-permission 5 \
-  --grace-idle 0 \
-  --interval 20 \
-  --max-nags 0
-
-# Result: Alerts quickly and frequently
-```
-
-#### Scenario 2: Gentle Alerts (Don't Annoy)
-```bash
-waiting configure \
-  --grace-stop 600 \
-  --grace-permission 30 \
-  --grace-idle 30 \
-  --interval 120 \
-  --max-nags 3
-
-# Result: Waits longer, alerts less frequently, stops after 3 rings
-```
-
-#### Scenario 3: Enable Permission Alerts (in addition to defaults)
-```bash
-waiting configure --enable-hook permission
-
-# Result: Alerts for stop, idle, AND permission dialogs
-# Note: Permission hook only fires for non-auto-approved tools
-```
-
-#### Scenario 4: Only Alert When Idle
-```bash
-waiting configure --hooks idle
-
-# Result: Only alerts for Claude being idle (waiting for input)
-```
-
-#### Scenario 5: Quiet Mode (Silent Notifications)
-```bash
-waiting configure --volume 20 --interval 90
-
-# Result: Very quiet and infrequent alerts
-```
-
-### Complete Configuration File Example
+All settings in `~/.waiting.json`:
 
 ```json
 {
   "audio": "default",
-  "interval": 30,
-  "max_nags": 0,
   "volume": 100,
   "enabled_hooks": ["stop", "idle"],
-  "grace_period_stop": 300,
-  "grace_period_permission": 10,
-  "grace_period_idle": 0
+  "grace_period": 30,
+  "interval": 30,
+  "max_nags": 0
 }
 ```
 
-### How to Configure via CLI (All Options)
+### Options
+
+| Option | Default | CLI Flag | Description |
+|--------|---------|----------|-------------|
+| `audio` | `"default"` | `--audio` | Sound file or `"default"` |
+| `volume` | `100` | `--volume` | Volume 1-100 |
+| `grace_period` | `30` | `--grace-period` | Seconds before first bell |
+| `interval` | `30` | `--interval` | Seconds between bell repeats |
+| `max_nags` | `0` | `--max-nags` | Max repeats (0=unlimited) |
+| `enabled_hooks` | `["stop", "idle"]` | `--enable-hook`, `--disable-hook` | Which hooks are active |
+
+### Examples
 
 ```bash
-# AUDIO & VOLUME
-waiting configure --audio /path/to/bell.wav    # Custom sound file
-waiting configure --audio default              # Back to default bell
-waiting configure --volume 50                  # Set to 50%
+# Less aggressive (longer waits)
+waiting configure --grace-period 120 --interval 60
 
-# TIMING
-waiting configure --interval 45                # Bell every 45 seconds
-waiting configure --max-nags 5                 # Max 5 bells total
-waiting configure --grace-stop 180             # Wait 3 min after Claude stops
-waiting configure --grace-permission 15        # Wait 15 sec after permission dialog
-waiting configure --grace-idle 10              # Wait 10 sec after idle
+# More aggressive (shorter waits)
+waiting configure --grace-period 10 --interval 15
 
-# HOOKS
-waiting configure --enable-hook stop           # Turn on stop alerts
-waiting configure --disable-hook idle          # Turn off idle alerts
-waiting configure --hooks stop,permission      # Only these hooks active
-waiting configure --hooks ""                   # Disable all hooks (same as disable)
+# Limit repeats
+waiting configure --max-nags 3
 
-# RESET & VIEW
-waiting configure --show                       # Display current config as JSON
-waiting configure --reset                      # Restore factory defaults
+# Enable permission hook
+waiting configure --enable-hook permission
 
-# COMBINATIONS
-waiting configure --volume 75 --interval 60 --grace-stop 120
+# Disable stop hook
+waiting configure --disable-hook stop
+
+# Set specific hooks
+waiting configure --hooks stop,idle
+
+# Quiet mode
+waiting configure --volume 30
+
+# Reset to defaults
+waiting configure --reset
 ```
 
-### Default Configuration Explanation
+## Hooks
 
-```json
-{
-  "audio": "default",                          // Use built-in bell.wav sound
-  "interval": 30,                              // Bell repeats every 30 seconds
-  "max_nags": 0,                               // No limit on bell repeats
-  "volume": 100,                               // Full volume
-  "enabled_hooks": ["stop", "idle"],           // Most reliable hooks enabled
-  "grace_period_stop": 300,                    // 5 min wait after Claude finishes
-  "grace_period_permission": 10,               // 10 sec wait after permission prompt
-  "grace_period_idle": 0                       // No extra wait after idle (60 sec built-in)
-}
-```
+Three types of events can trigger notifications:
 
-## Hooks Explained
+### Stop Hook (enabled by default)
 
-Three types of Claude Code events can trigger notifications:
+**Triggers:** Claude finishes responding
 
-### Permission Hook (`permission`)
-**Triggers when:** Claude shows a permission dialog (e.g., "Allow tool X?")
+After grace period, bell plays. Repeats until you respond.
 
-**Grace period:** 10 seconds (default)
+### Idle Hook (enabled by default)
 
-**Use case:** You stepped away and Claude is waiting for approval. After 10 seconds of no response, bell plays.
+**Triggers:** Claude idle for 60+ seconds
 
-> **Note:** The permission hook only fires for tools that require manual approval. If you have auto-approve rules enabled (which is common), most tools will be approved automatically and this hook won't fire. For this reason, it's not enabled by default. Enable it with `waiting configure --enable-hook permission` if you frequently encounter permission dialogs.
+Note: Claude has a built-in 60-second delay before firing idle.
 
-### Stop Hook (`stop`)
-**Triggers when:** Claude finishes responding
+### Permission Hook (NOT enabled by default)
 
-**Grace period:** 300 seconds / 5 minutes (default)
+**Triggers:** Claude shows a permission dialog
 
-**Use case:** Claude finished a long task while you were AFK. If you don't interact within 5 minutes, bell plays to let you know it's done.
+Plays once (no repeat). Not enabled by default because most tools are auto-approved.
 
-### Idle Hook (`idle`)
-**Triggers when:** Claude's built-in `idle_prompt` fires (after 60s of inactivity)
-
-**Grace period:** 0 seconds (default)
-
-**Use case:** Claude has been waiting at a prompt for 60+ seconds. Bell plays immediately since the 60s wait is already built into Claude.
-
-## How Grace Periods Work
-
-Grace periods implement "wait and see" logic:
-
-1. Hook fires (e.g., permission dialog appears)
-2. Background process starts and waits for grace period
-3. During wait, checks if you responded (sent message or approved tool)
-4. If you responded → no bell, process exits silently
-5. If no response after grace period → bell plays
-6. Bell repeats every `interval` seconds until you respond (or `max_nags` reached)
-
-This prevents annoying you when you're actively working - the bell only plays if you're actually AFK.
-
-## Activity Tracking
-
-Two events are tracked as "user activity":
-- **UserPromptSubmit** - You sent a message to Claude
-- **PreToolUse** - You approved a tool
-
-When either occurs, any running nag process is killed immediately.
-
-## Troubleshooting
-
-### Notifications Not Working?
-
-**Check status:**
+Enable with:
 ```bash
-waiting status
-```
-
-**Verify hooks are installed:**
-```bash
-waiting status  # Should say "Hooks: Installed"
-```
-
-**Did you restart Claude Code?**
-Yes, really. Claude Code must be restarted after `waiting` command to load the new hooks.
-
-**Check if audio player is available:**
-```bash
-# Linux
-which paplay || which pw-play || which aplay
-
-# macOS
-which afplay
-
-# WSL
-which powershell.exe
-```
-
-If none found, install a PulseAudio or ALSA package for your system.
-
-**Check config file:**
-```bash
-cat ~/.waiting.json
-```
-
-**Try disabling and re-enabling:**
-```bash
-waiting disable
-waiting  # Re-enable with defaults
-# Restart Claude Code
-```
-
-**Check logs (nag processes):**
-```bash
-ps aux | grep waiting-nag
-```
-
-### No Sound But Notifications Working?
-
-- Check volume: `waiting configure --volume 100`
-- Check audio file exists: `waiting configure --show` and verify audio path
-- Try a different audio player installed on your system
-- Check system audio isn't muted
-
-### Too Many Alerts?
-
-Increase grace periods or intervals:
-```bash
-waiting configure --grace-stop 600 --interval 120 --max-nags 3
-```
-
-### Too Few Alerts?
-
-Decrease grace periods or intervals:
-```bash
-waiting configure --grace-stop 30 --interval 15
+waiting configure --enable-hook permission
 ```
 
 ## How It Works
 
-For a detailed explanation of the architecture, data flow, and implementation details, see [ARCHITECTURE.md](docs/reference/ARCHITECTURE.md).
+1. Grace period passes after event
+2. Bell plays
+3. Bell repeats every `interval` seconds
+4. When you respond, bell stops immediately
 
-**Quick overview:**
-1. `waiting` CLI installs bash hook scripts to `~/.claude/hooks/`
-2. Claude Code fires hooks on events (permission, stop, idle)
-3. Hook scripts use audio playback and background processes for alerts
-4. Activity detection (user responses) kills the alert process
-5. Configuration is embedded in the hook scripts (no runtime overhead)
+Activity is detected via:
+- Sending a message to Claude
+- Approving/denying a permission
+
+## Troubleshooting
+
+```bash
+# Check status
+waiting status
+
+# Check audio player
+which paplay || which aplay || which afplay
+
+# Reset and try again
+waiting disable
+waiting
+# Restart Claude Code
+```
 
 ## Requirements
 
 - Python 3.9+
-- Audio player (auto-detected in order):
-  - `paplay` (PulseAudio) - supports volume
-  - `pw-play` (PipeWire) - supports volume
-  - `aplay` (ALSA) - no volume control
-  - `afplay` (macOS) - supports volume
-  - `powershell.exe` (WSL) - Windows audio via PowerShell
+- Audio player (auto-detected):
+  - `paplay` (PulseAudio)
+  - `pw-play` (PipeWire)
+  - `aplay` (ALSA)
+  - `afplay` (macOS)
+  - `powershell.exe` (WSL)

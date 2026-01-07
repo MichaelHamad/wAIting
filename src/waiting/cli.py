@@ -20,13 +20,11 @@ SETTINGS_PATH = Path.home() / ".claude" / "settings.json"
 
 DEFAULT_CONFIG = {
     "audio": "default",
-    "interval": 30,
-    "max_nags": 0,
     "volume": 100,
     "enabled_hooks": ["stop", "idle"],
-    "grace_period_stop": 300,
-    "grace_period_permission": 10,
-    "grace_period_idle": 0,
+    "grace_period": 30,
+    "interval": 30,
+    "max_nags": 0,
 }
 
 
@@ -170,10 +168,10 @@ def create_stop_script() -> str:
     """Generate the Stop hook script (wait-and-see logic)."""
     config = load_config()
     audio_path = get_audio_path()
-    interval = config["interval"]
-    max_nags = config["max_nags"]
-    grace_period = config["grace_period_stop"]
-    volume = config["volume"]
+    interval = config.get("interval", 30)
+    max_nags = config.get("max_nags", 0)
+    grace_period = config.get("grace_period", 30)
+    volume = config.get("volume", 100)
 
     return f'''#!/bin/bash
 # Waiting - Stop hook with wait-and-see logic
@@ -352,10 +350,10 @@ def create_permission_script() -> str:
     """Generate the Permission hook script (wait-and-see with pending marker)."""
     config = load_config()
     audio_path = get_audio_path()
-    interval = config["interval"]
-    max_nags = config["max_nags"]
-    grace_period = config["grace_period_permission"]
-    volume = config["volume"]
+    interval = config.get("interval", 30)
+    max_nags = config.get("max_nags", 0)
+    grace_period = config.get("grace_period", 30)
+    volume = config.get("volume", 100)
 
     return f'''#!/bin/bash
 # Waiting - Permission hook with pending marker
@@ -520,26 +518,9 @@ done
 
 should_exit && cleanup
 
-# Main nag loop
-while true; do
-    elapsed=$(($(date +%s) - start_time))
-    [ "$elapsed" -ge "$max_lifetime" ] && cleanup
-    should_exit && cleanup
-
-    play_sound
-    nag_count=$((nag_count + 1))
-
-    if [ "$MAX_NAGS" -gt 0 ] && [ "$nag_count" -ge "$MAX_NAGS" ]; then
-        cleanup
-    fi
-
-    # Sleep in 0.2 second increments for fast response to stop signal
-    interval_checks=$((INTERVAL * 5))
-    for ((i=0; i<interval_checks; i++)); do
-        sleep 0.2
-        should_exit && cleanup
-    done
-done
+# Play once and exit (no repeat for permission hook)
+play_sound
+cleanup
 NAGEOF
 
 chmod +x "$NAG_SCRIPT"
@@ -555,10 +536,10 @@ def create_idle_script() -> str:
     """Generate the Idle hook script (Claude's idle_prompt has 60s built-in)."""
     config = load_config()
     audio_path = get_audio_path()
-    interval = config["interval"]
-    max_nags = config["max_nags"]
-    grace_period = config["grace_period_idle"]
-    volume = config["volume"]
+    interval = config.get("interval", 30)
+    max_nags = config.get("max_nags", 0)
+    grace_period = config.get("grace_period", 30)
+    volume = config.get("volume", 100)
 
     return f'''#!/bin/bash
 # Waiting - Idle hook (idle_prompt already has 60s built-in delay)
@@ -1144,7 +1125,23 @@ def cli(ctx, audio, interval, max_nags):
             save_config(config)
 
         setup_hooks()
+        config = load_config()
+
         click.echo("Waiting notifications enabled.")
+        click.echo("")
+        click.echo("Current settings:")
+        click.echo(f"  Enabled hooks: {', '.join(config.get('enabled_hooks', ['stop', 'idle']))}")
+        click.echo(f"  Grace period: {config.get('grace_period', 30)}s")
+        click.echo(f"  Interval: {config.get('interval', 30)}s")
+        click.echo(f"  Volume: {config.get('volume', 100)}%")
+        click.echo("")
+        click.echo("Configure with:")
+        click.echo("  waiting configure --grace-period 60")
+        click.echo("  waiting configure --interval 45")
+        click.echo("  waiting configure --enable-hook permission")
+        click.echo("  waiting configure --disable-hook idle")
+        click.echo("  waiting configure --show    (view all settings)")
+        click.echo("")
         click.echo("Restart Claude Code to activate hooks.")
 
 
@@ -1307,32 +1304,26 @@ def status():
 
     # Config
     click.echo(f"\nConfiguration:")
-    click.echo(f"  Audio: {config['audio']}")
-    click.echo(f"  Interval: {config['interval']}s")
-    click.echo(f"  Max nags: {config['max_nags']} (0=unlimited)")
-    click.echo(f"  Volume: {config['volume']}%")
-    click.echo(f"  Enabled hooks: {', '.join(config['enabled_hooks'])}")
-    click.echo(f"  Grace periods:")
-    click.echo(f"    stop: {config['grace_period_stop']}s")
-    click.echo(f"    permission: {config['grace_period_permission']}s")
-    click.echo(f"    idle: {config['grace_period_idle']}s")
+    click.echo(f"  Audio: {config.get('audio', 'default')}")
+    click.echo(f"  Grace period: {config.get('grace_period', 30)}s")
+    click.echo(f"  Interval: {config.get('interval', 30)}s")
+    click.echo(f"  Max nags: {config.get('max_nags', 0)} (0=unlimited)")
+    click.echo(f"  Volume: {config.get('volume', 100)}%")
+    click.echo(f"  Enabled hooks: {', '.join(config.get('enabled_hooks', ['stop', 'idle']))}")
 
 
 @cli.command()
 @click.option("--audio", type=str, help="Audio file path ('default' for bundled)")
-@click.option("--interval", type=int, help="Seconds between nags")
-@click.option("--max-nags", type=int, help="Maximum nags (0=unlimited)")
+@click.option("--interval", type=int, help="Seconds between bell repeats")
+@click.option("--max-nags", type=int, help="Maximum bell repeats (0=unlimited)")
 @click.option("--volume", type=int, help="Volume percentage (1-100)")
-@click.option("--grace-stop", type=int, help="Stop hook grace period")
-@click.option("--grace-permission", type=int, help="Permission hook grace period")
-@click.option("--grace-idle", type=int, help="Idle hook grace period")
+@click.option("--grace-period", type=int, help="Seconds to wait before first bell")
 @click.option("--enable-hook", type=click.Choice(["stop", "permission", "idle"]), help="Enable a hook")
 @click.option("--disable-hook", type=click.Choice(["stop", "permission", "idle"]), help="Disable a hook")
 @click.option("--hooks", type=str, help="Set enabled hooks (comma-separated)")
 @click.option("--show", is_flag=True, help="Show config without modifying")
 @click.option("--reset", is_flag=True, help="Reset to defaults")
-def configure(audio, interval, max_nags, volume, grace_stop, grace_permission,
-              grace_idle, enable_hook, disable_hook, hooks, show, reset):
+def configure(audio, interval, max_nags, volume, grace_period, enable_hook, disable_hook, hooks, show, reset):
     """View or modify configuration."""
     if reset:
         save_config(DEFAULT_CONFIG.copy())
@@ -1362,14 +1353,8 @@ def configure(audio, interval, max_nags, volume, grace_stop, grace_permission,
     if volume is not None:
         config["volume"] = max(1, min(100, volume))
         modified = True
-    if grace_stop is not None:
-        config["grace_period_stop"] = grace_stop
-        modified = True
-    if grace_permission is not None:
-        config["grace_period_permission"] = grace_permission
-        modified = True
-    if grace_idle is not None:
-        config["grace_period_idle"] = grace_idle
+    if grace_period is not None:
+        config["grace_period"] = grace_period
         modified = True
     if enable_hook:
         if enable_hook not in config["enabled_hooks"]:
