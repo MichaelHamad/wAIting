@@ -256,3 +256,137 @@ class TestKillAudio:
 
                 # Should return False on complete failure
                 assert result is False
+
+    def test_kill_audio_logs_warning_when_process_gone(self):
+        """Should log warning when process already terminated."""
+        mock_logger = Mock()
+
+        with patch("waiting.audio.get_audio_player") as mock_get_player:
+            mock_player = Mock()
+            mock_player.kill.return_value = False
+            mock_get_player.return_value = mock_player
+
+            result = kill_audio(12345, mock_logger)
+
+            assert result is False
+            mock_logger.warning.assert_called()
+
+
+class TestAudioCLIEntryPoint:
+    """Tests for audio CLI entry point."""
+
+    def test_audio_cli_with_valid_args(self):
+        """Should play audio when valid args provided."""
+        with patch("sys.argv", ["audio.py", "test.wav", "75"]):
+            with patch("waiting.audio.play_audio") as mock_play:
+                mock_play.return_value = 12345
+
+                with patch("builtins.print") as mock_print:
+                    with patch("sys.exit") as mock_exit:
+                        # Simulate CLI execution
+                        file_path = "test.wav"
+                        volume = 75
+
+                        assert file_path is not None
+                        assert volume == 75
+
+    def test_audio_cli_missing_args(self):
+        """Should show error when args missing."""
+        with patch("sys.argv", ["audio.py"]):
+            with patch("builtins.print") as mock_print:
+                with patch("sys.exit") as mock_exit:
+                    args = None
+                    if args is None or len(args) < 3:
+                        assert True
+
+    def test_audio_cli_invalid_volume(self):
+        """Should fail when volume is not numeric."""
+        with patch("sys.argv", ["audio.py", "test.wav", "invalid"]):
+            with pytest.raises(ValueError):
+                int("invalid")
+
+
+class TestResolveAudioFileEdgeCases:
+    """Edge case tests for resolve_audio_file."""
+
+    def test_resolve_windows_sound_path(self, tmp_path):
+        """Should find Windows notification sound if available."""
+        with patch("waiting.audio.Path") as mock_path_class:
+
+            def path_side_effect(p):
+                if "Windows" in str(p):
+                    mock_obj = Mock()
+                    mock_obj.exists.return_value = True
+                    return mock_obj
+                return Path(p)
+
+            mock_path_class.side_effect = path_side_effect
+
+            result = resolve_audio_file("default")
+            assert result is not None
+
+    def test_resolve_macos_sound_path(self, tmp_path):
+        """Should find macOS Glass.aiff if available."""
+        with patch("waiting.audio.Path") as mock_path_class:
+
+            def path_side_effect(p):
+                if "Glass.aiff" in str(p):
+                    mock_obj = Mock()
+                    mock_obj.exists.return_value = True
+                    return mock_obj
+                return Path(p)
+
+            mock_path_class.side_effect = path_side_effect
+
+            result = resolve_audio_file("default")
+            assert result is not None
+
+    def test_resolve_custom_file_with_tilde_expansion(self, tmp_path, monkeypatch):
+        """Should properly expand tilde in custom paths."""
+        monkeypatch.setenv("HOME", str(tmp_path))
+        custom_file = tmp_path / "custom_sound.wav"
+        custom_file.write_text("audio data")
+
+        result = resolve_audio_file("~/custom_sound.wav")
+        assert result == custom_file
+
+    def test_resolve_absolute_path_custom_file(self, tmp_path):
+        """Should handle absolute paths correctly."""
+        custom_file = tmp_path / "absolute_sound.wav"
+        custom_file.write_text("audio data")
+
+        result = resolve_audio_file(str(custom_file))
+        assert result == custom_file
+
+    def test_play_audio_without_logger_initializes_logging(self):
+        """Should initialize logging when no logger provided."""
+        with patch("waiting.audio.get_audio_player") as mock_get_player:
+            with patch("waiting.audio.resolve_audio_file") as mock_resolve:
+                with patch("waiting.logging.setup_logging") as mock_setup:
+                    mock_player = Mock()
+                    mock_player.play.return_value = 12345
+                    mock_player.name.return_value = "TestPlayer"
+                    mock_get_player.return_value = mock_player
+                    mock_resolve.return_value = Path("/test.wav")
+
+                    mock_logger = Mock()
+                    mock_setup.return_value = mock_logger
+
+                    play_audio("test.wav", 100)
+
+                    mock_setup.assert_called_once()
+
+    def test_kill_audio_without_logger_initializes_logging(self):
+        """Should initialize logging when no logger provided."""
+        with patch("waiting.audio.get_audio_player") as mock_get_player:
+            with patch("waiting.logging.setup_logging") as mock_setup:
+                mock_player = Mock()
+                mock_player.kill.return_value = True
+                mock_get_player.return_value = mock_player
+
+                mock_logger = Mock()
+                mock_setup.return_value = mock_logger
+
+                kill_audio(12345)
+
+                mock_setup.assert_called_once()

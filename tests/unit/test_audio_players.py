@@ -280,6 +280,176 @@ class TestAFPlayPlayer:
             # Check that Glass.aiff is in the command args
             assert any("Glass.aiff" in str(arg) for arg in call_args)
 
+    def test_afplay_volume_conversion(self):
+        """Should convert volume to 0.0-1.0 scale."""
+        with patch("waiting.audio_players.macos.subprocess.Popen") as mock_popen:
+            mock_proc = Mock()
+            mock_proc.pid = 12345
+            mock_popen.return_value = mock_proc
+
+            player = AFPlayPlayer()
+            player.play("test.wav", 50)
+
+            call_args = mock_popen.call_args[0][0]
+            # 50% = 0.5
+            assert "0.5" in call_args
+
+    def test_afplay_volume_100_percent(self):
+        """Should handle 100% volume correctly."""
+        with patch("waiting.audio_players.macos.subprocess.Popen") as mock_popen:
+            mock_proc = Mock()
+            mock_proc.pid = 12345
+            mock_popen.return_value = mock_proc
+
+            player = AFPlayPlayer()
+            player.play("test.wav", 100)
+
+            call_args = mock_popen.call_args[0][0]
+            assert "1.0" in call_args
+
+    def test_afplay_volume_low(self):
+        """Should handle low volume correctly."""
+        with patch("waiting.audio_players.macos.subprocess.Popen") as mock_popen:
+            mock_proc = Mock()
+            mock_proc.pid = 12345
+            mock_popen.return_value = mock_proc
+
+            player = AFPlayPlayer()
+            player.play("test.wav", 10)
+
+            call_args = mock_popen.call_args[0][0]
+            assert "0.1" in call_args
+
+    def test_afplay_kill_success(self):
+        """Kill should succeed."""
+        with patch("waiting.audio_players.macos.subprocess.run") as mock_run:
+            player = AFPlayPlayer()
+            result = player.kill(12345)
+
+            assert result is True
+            mock_run.assert_called_once()
+
+    def test_afplay_kill_with_exception(self):
+        """Kill should handle exceptions gracefully."""
+        with patch("waiting.audio_players.macos.subprocess.run") as mock_run:
+            mock_run.side_effect = Exception("Kill failed")
+
+            player = AFPlayPlayer()
+            result = player.kill(12345)
+
+            assert result is False
+
+    def test_afplay_play_includes_volume_flag(self):
+        """Play should include volume flag."""
+        with patch("waiting.audio_players.macos.subprocess.Popen") as mock_popen:
+            mock_proc = Mock()
+            mock_proc.pid = 12345
+            mock_popen.return_value = mock_proc
+
+            player = AFPlayPlayer()
+            player.play("test.wav", 100)
+
+            call_args = mock_popen.call_args[0][0]
+            assert "-v" in call_args
+
+
+class TestPulseAudioPlayerEdgeCases:
+    """Edge case tests for PulseAudio player."""
+
+    def test_pulseaudio_kill_exception_handling(self):
+        """Kill should handle exceptions and return False."""
+        with patch("waiting.audio_players.linux.subprocess.run") as mock_run:
+            mock_run.side_effect = Exception("Kill failed")
+
+            player = PulseAudioPlayer()
+            result = player.kill(12345)
+
+            assert result is False
+
+    def test_pulseaudio_volume_boundary_low(self):
+        """Should handle minimum volume."""
+        with patch("waiting.audio_players.linux.subprocess.Popen") as mock_popen:
+            mock_proc = Mock()
+            mock_proc.pid = 12345
+            mock_popen.return_value = mock_proc
+
+            player = PulseAudioPlayer()
+            player.play("test.wav", 1)
+
+            call_args = mock_popen.call_args[0][0]
+            # 1% = 655 (1/100 * 65536)
+            assert "655" in call_args
+
+    def test_pulseaudio_volume_boundary_high(self):
+        """Should handle maximum volume."""
+        with patch("waiting.audio_players.linux.subprocess.Popen") as mock_popen:
+            mock_proc = Mock()
+            mock_proc.pid = 12345
+            mock_popen.return_value = mock_proc
+
+            player = PulseAudioPlayer()
+            player.play("test.wav", 100)
+
+            call_args = mock_popen.call_args[0][0]
+            # 100% = 65536
+            assert "65536" in call_args
+
+
+class TestPipeWirePlayerEdgeCases:
+    """Edge case tests for PipeWire player."""
+
+    def test_pipewire_kill_exception_handling(self):
+        """Kill should handle exceptions and return False."""
+        with patch("waiting.audio_players.linux.subprocess.run") as mock_run:
+            mock_run.side_effect = Exception("Kill failed")
+
+            player = PipeWirePlayer()
+            result = player.kill(12345)
+
+            assert result is False
+
+    def test_pipewire_play_with_volume(self):
+        """Play should include volume control."""
+        with patch("waiting.audio_players.linux.subprocess.Popen") as mock_popen:
+            mock_proc = Mock()
+            mock_proc.pid = 12345
+            mock_popen.return_value = mock_proc
+
+            player = PipeWirePlayer()
+            player.play("test.wav", 75)
+
+            call_args = mock_popen.call_args[0][0]
+            assert "--volume" in call_args
+            assert "0.75" in call_args
+
+
+class TestALSAPlayerEdgeCases:
+    """Edge case tests for ALSA player."""
+
+    def test_alsa_kill_exception_handling(self):
+        """Kill should handle exceptions and return False."""
+        with patch("waiting.audio_players.linux.subprocess.run") as mock_run:
+            mock_run.side_effect = Exception("Kill failed")
+
+            player = ALSAPlayer()
+            result = player.kill(12345)
+
+            assert result is False
+
+    def test_alsa_play_with_volume(self):
+        """Play should include volume control."""
+        with patch("waiting.audio_players.linux.subprocess.Popen") as mock_popen:
+            mock_proc = Mock()
+            mock_proc.pid = 12345
+            mock_popen.return_value = mock_proc
+
+            player = ALSAPlayer()
+            player.play("test.wav", 50)
+
+            call_args = mock_popen.call_args[0][0]
+            # aplay uses -v for volume
+            assert "-v" in call_args
+
 
 class TestPowerShellPlayer:
     """Tests for Windows PowerShell player."""
@@ -323,3 +493,13 @@ class TestPowerShellPlayer:
 
             assert result is True
             mock_run.assert_called()
+
+    def test_powershell_kill_exception_handling(self):
+        """Kill should handle exceptions and return False."""
+        with patch("waiting.audio_players.windows.subprocess.run") as mock_run:
+            mock_run.side_effect = Exception("Kill failed")
+
+            player = PowerShellPlayer()
+            result = player.kill(12345)
+
+            assert result is False
