@@ -129,7 +129,7 @@ waiting disable          # Turn off completely
 waiting kill             # Stop current bell (stay enabled)
 waiting status           # See what's active
 ```
-
+y
 ### Adjusting Behavior
 
 ```bash
