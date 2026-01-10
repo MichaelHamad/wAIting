@@ -15,9 +15,8 @@ waiting = "waiting.__main__:main"
 [tool.hatch.build.targets.wheel]
 packages = ["src/waiting"]
 
-[[tool.hatch.build.targets.wheel.force-include]]
-path = "src/waiting/assets/Cool_bell_final.wav"
-destination = "waiting/assets/Cool_bell_final.wav"
+[tool.hatch.build.targets.wheel.force-include]
+"src/waiting/assets/Cool_bell_final.wav" = "waiting/assets/Cool_bell_final.wav"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
