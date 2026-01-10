@@ -9,6 +9,16 @@ from .errors import AudioError
 from .audio_players.base import AudioPlayer
 
 
+# Cache for audio player instance (for testing purposes)
+_audio_player_cache = None
+
+
+def _clear_audio_player_cache() -> None:
+    """Clear the audio player cache. Used for testing purposes."""
+    global _audio_player_cache
+    _audio_player_cache = None
+
+
 def get_audio_player() -> AudioPlayer:
     """
     Auto-detect and return appropriate audio player for platform.
