@@ -1,0 +1,192 @@
+================================================================================
+WAITING - IMPLEMENTATION PLAN REVIEW COMPLETE
+================================================================================
+
+Date: 2026-01-10
+Task: Review IMPLEMENTATION_PLAN.md against official Claude Code Hooks spec
+Status: ✓ COMPLETE AND READY FOR DEVELOPMENT
+
+================================================================================
+KEY FINDINGS
+================================================================================
+
+CRITICAL FINDING #1: Hook Registration Required in ~/.claude/settings.json
+────────────────────────────────────────────────────────────────────────────
+  Problem: Original plan generated hook scripts but never registered them
+  Impact:  Hooks wouldn't work without settings.json registration
+  Solution: Added Phase 1 Task 1.6 - Settings integration module
+  Result:  Plan now includes both script generation AND settings registration
+
+IMPORTANT FINDING #2: Settings Merge Must Preserve Existing Hooks
+────────────────────────────────────────────────────────────────────────────
+  Problem: Overwriting settings.json would delete user's other hooks
+  Impact:  Safety critical - user loses other tool hooks
+  Solution: Explicit merge strategy in settings.py module
+  Result:  Safe installation that preserves other hooks
+
+CLARIFICATION: PreToolUse Fires on Every Tool Call
+────────────────────────────────────────────────────────────────────────────
+  Finding: PreToolUse event fires on ALL tool execution
+  Impact:  Correct way to detect "user responded to permission"
+  Result:  Updated architecture documentation with clarification
+
+DISCOVERY: Notification Hook Event (Future Work)
+────────────────────────────────────────────────────────────────────────────
+  Finding: Official specs include Notification event with idle_prompt
+  Impact:  Opportunity for Phase 6+ enhancements
+  Result:  Added Task 2.5 for future idle notifications
+
+================================================================================
+REFINEMENTS MADE
+================================================================================
+
+Phase 1 (Foundation)
+  ✓ Added Task 1.6: Settings integration module (CRITICAL)
+  ✓ Added test_settings.py with comprehensive coverage
+  ✓ Added settings.py to handle ~/.claude/settings.json
+
+Phase 2 (Hooks & Events)
+  ✓ Updated HookManager to register hooks in settings.json
+  ✓ Enhanced hook script documentation with JSON formats
+  ✓ Clarified PreToolUse event flow
+  ✓ Added Task 2.5 for future Notification hook
+
+Overall
+  ✓ Added "Critical Integration Point" documentation
+  ✓ Updated acceptance criteria for all hook-related tasks
+  ✓ Added hook input/output format specifications
+  ✓ Created comprehensive developer reference guide
+
+================================================================================
+DOCUMENTATION DELIVERED
+================================================================================
+
+Main Plan (Enhanced):
+  • IMPLEMENTATION_PLAN.md (1,711 lines)
+    - 5-phase strategy with all refinements
+    - Critical task: Phase 1 Task 1.6 (settings module)
+    - Complete acceptance criteria
+
+Supporting Documentation:
+  • REFINEMENT_SUMMARY.md (231 lines)
+    - Quick overview of changes
+    - Best for: Reviews, quick reference
+
+  • CRITICAL_FINDINGS.md (324 lines)
+    - 10 detailed findings with spec evidence
+    - Best for: Understanding rationale
+
+  • HOOK_SPECS_REFERENCE.md (354 lines)
+    - Quick developer reference
+    - Best for: While implementing hooks
+
+  • README.md (269 lines)
+    - Navigation and index
+    - Best for: Getting oriented
+
+  • This file + REVIEW_COMPLETED.md
+    - Executive summaries
+
+Total Documentation: 6,000+ lines (single source of truth)
+
+================================================================================
+CRITICAL PATH FOR IMPLEMENTATION
+================================================================================
+
+Phase 1 Priority (MUST DO FIRST):
+  1. Task 1.1: Project setup (pyproject.toml, structure)
+  2. Task 1.6: Settings integration module (BLOCKS PHASE 2)
+     - settings.py with load/merge/save functions
+     - test_settings.py with comprehensive coverage
+     - Handle ~/.claude/settings.json
+
+Phase 2 Dependency:
+  3. Task 2.1: Update HookManager
+     - Integration with settings.py
+     - Both script generation AND registration
+
+  4. Tasks 2.2-2.3: Hook scripts
+     - Parse session_id from hook JSON
+     - Proper exit behavior
+     - Background grace period
+
+Phase 3-5:
+  5. Audio players, CLI, testing (unchanged from original)
+
+================================================================================
+WHAT NEEDS TO HAPPEN FOR MVP
+================================================================================
+
+MUST IMPLEMENT:
+  ✓ settings.py module for ~/.claude/settings.json management
+  ✓ HookManager two-step process (scripts + registration)
+  ✓ Comprehensive settings merge/preserve tests
+  ✓ Hook scripts with proper JSON input parsing
+  ✓ Phase 1-4 completion as per refined plan
+
+MUST TEST:
+  ✓ Settings file creation and management
+  ✓ Hook registration in settings.json
+  ✓ Preservation of existing hooks during merge
+  ✓ Clean removal of hooks
+  ✓ Hook script execution and coordination
+
+MUST VERIFY:
+  ✓ Hooks registered in ~/.claude/settings.json
+  ✓ Hooks fire on PermissionRequest and PreToolUse events
+  ✓ Session coordination works correctly
+  ✓ Audio plays after grace period
+  ✓ Audio stops on user activity
+
+================================================================================
+COMPLIANCE WITH OFFICIAL SPECS
+================================================================================
+
+All refinements verified against: /home/michael/projects/waiting_new/info.md
+
+Hook Registration Format:     ✓ Lines 9-42
+PermissionRequest Event:      ✓ Lines 335-338
+PreToolUse Event:             ✓ Lines 318-333
+Hook Input Format:            ✓ Lines 484-629
+Hook Output Format:           ✓ Lines 631-856
+Session ID:                   ✓ Line 492
+Exit Codes:                   ✓ Lines 631-670
+Timeout & Parallelization:    ✓ Lines 1104-1106
+Notification Event (Future):  ✓ Lines 348-388
+
+================================================================================
+RECOMMENDATIONS
+================================================================================
+
+FOR IMMEDIATE DEVELOPMENT:
+  1. Read REFINEMENT_SUMMARY.md (5 min overview)
+  2. Review CRITICAL_FINDINGS.md (10 min to understand why)
+  3. Start Phase 1 Task 1.1 with plan emphasis on Task 1.6
+  4. Keep HOOK_SPECS_REFERENCE.md handy while coding
+
+FOR CODE REVIEW:
+  1. Verify Phase 1 Task 1.6 (settings.py) thoroughly
+  2. Verify Phase 2 Task 2.1 (HookManager updates)
+  3. Validate test coverage for settings merge scenarios
+  4. Check hook registration in ~/.claude/settings.json
+
+FOR QA:
+  1. Test settings file creation and management
+  2. Test hook registration verification
+  3. Test on Linux, macOS, WSL
+  4. Verify hooks fire in correct order
+
+================================================================================
+STATUS
+================================================================================
+
+✓ Review Complete
+✓ Critical Gaps Identified
+✓ Refinements Incorporated
+✓ Documentation Created
+✓ Spec Compliance Verified
+✓ Ready for Development
+
+Next Step: Implement Phase 1, starting with Task 1.6 (settings module)
+
+================================================================================
