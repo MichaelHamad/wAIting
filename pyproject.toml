@@ -5,13 +5,6 @@ build-backend = "hatchling.build"
 [project]
 name = "waiting"
 version = "0.1.0"
-description = "Notify when Claude Code needs permission"
+description = "Audio notification system for Claude Code"
 requires-python = ">=3.9"
-dependencies = ["click>=8.0.0"]
-
-[project.scripts]
-waiting = "waiting.cli:cli"
-
-[tool.hatch.build.targets.wheel]
-packages = ["src/waiting"]
-artifacts = ["src/waiting/*.wav"]
+dependencies = []
