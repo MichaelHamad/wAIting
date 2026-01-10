@@ -4,6 +4,30 @@ import subprocess
 from pathlib import Path
 from shutil import which
 
+from ..errors import AudioError
+
+
+# Common Linux system sound locations
+LINUX_SYSTEM_SOUNDS = [
+    "/usr/share/sounds/freedesktop/stereo/bell.oga",
+    "/usr/share/sounds/freedesktop/stereo/complete.oga",
+    "/usr/share/sounds/sound-icons/prompt.wav",
+    "/usr/share/sounds/sound-icons/bell.wav",
+]
+
+
+def _find_system_sound() -> str | None:
+    """
+    Find an available system sound file on Linux.
+
+    Returns:
+        str | None: Path to system sound file, or None if not found
+    """
+    for sound_path in LINUX_SYSTEM_SOUNDS:
+        if Path(sound_path).exists():
+            return sound_path
+    return None
+
 
 class PulseAudioPlayer:
     """PulseAudio (paplay) player for Linux."""
@@ -72,6 +96,7 @@ class PipeWirePlayer:
             int: Process ID
 
         Raises:
+            AudioError: If "default" requested but no system sound found
             Exception: If playback fails
         """
         # Convert volume 1-100 to percentage
@@ -79,10 +104,18 @@ class PipeWirePlayer:
 
         cmd = ["pw-play"]
 
-        if file_path != "default":
+        if file_path == "default":
+            system_sound = _find_system_sound()
+            if system_sound is None:
+                raise AudioError(
+                    "PipeWire player: No system sound found. "
+                    "Install freedesktop-sound-theme or specify a custom audio file."
+                )
+            cmd.append(system_sound)
+        else:
             cmd.append(file_path)
 
-        # pw-play doesn't have direct volume control, but we can use volume argument
+        # pw-play volume control via --volume argument
         cmd.extend(["--volume", str(pw_volume)])
 
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -127,7 +160,6 @@ class ALSAPlayer:
         if file_path == "default":
             # ALSA requires a file path; this should not happen with bundled sound
             # but handle gracefully as defensive programming
-            from ..errors import AudioError
             raise AudioError("ALSA player requires a file path, cannot use 'default' string")
 
         cmd.append(file_path)

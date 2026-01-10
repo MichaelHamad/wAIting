@@ -350,3 +350,91 @@ class TestIsInstalled:
         result = is_installed(tmp_settings)
 
         assert result is False
+
+
+class TestHookExistsHelper:
+    """Tests for _hook_exists helper function."""
+
+    def test_hook_exists_returns_true_when_present(self):
+        """Should return True when hook is registered."""
+        from waiting.settings import _hook_exists
+
+        hooks_list = [
+            {
+                "matcher": "*",
+                "hooks": [
+                    {"type": "command", "command": "/path/to/waiting-notify-permission.sh"}
+                ]
+            }
+        ]
+
+        assert _hook_exists(hooks_list, "waiting-notify-permission.sh") is True
+
+    def test_hook_exists_returns_false_when_missing(self):
+        """Should return False when hook not registered."""
+        from waiting.settings import _hook_exists
+
+        hooks_list = [
+            {
+                "matcher": "*",
+                "hooks": [
+                    {"type": "command", "command": "/path/to/other-hook.sh"}
+                ]
+            }
+        ]
+
+        assert _hook_exists(hooks_list, "waiting-notify-permission.sh") is False
+
+    def test_hook_exists_handles_empty_list(self):
+        """Should return False for empty hooks list."""
+        from waiting.settings import _hook_exists
+
+        assert _hook_exists([], "waiting-notify-permission.sh") is False
+
+    def test_hook_exists_handles_non_dict_entries(self):
+        """Should skip non-dict entries gracefully."""
+        from waiting.settings import _hook_exists
+
+        hooks_list = [
+            "invalid_string_entry",
+            None,
+            {"matcher": "*", "hooks": [{"command": "/path/waiting-notify-permission.sh"}]}
+        ]
+
+        assert _hook_exists(hooks_list, "waiting-notify-permission.sh") is True
+
+    def test_hook_exists_checks_matcher_wildcard(self):
+        """Should only match hooks with matcher='*'."""
+        from waiting.settings import _hook_exists
+
+        hooks_list = [
+            {
+                "matcher": "Bash",  # Not wildcard
+                "hooks": [{"command": "/path/waiting-notify-permission.sh"}]
+            }
+        ]
+
+        assert _hook_exists(hooks_list, "waiting-notify-permission.sh") is False
+
+    def test_hook_exists_handles_missing_hooks_key(self):
+        """Should handle entries without hooks key."""
+        from waiting.settings import _hook_exists
+
+        hooks_list = [
+            {"matcher": "*"}  # No hooks key
+        ]
+
+        assert _hook_exists(hooks_list, "waiting-notify-permission.sh") is False
+
+    def test_hook_exists_handles_missing_command_key(self):
+        """Should handle hooks without command key."""
+        from waiting.settings import _hook_exists
+
+        hooks_list = [
+            {
+                "matcher": "*",
+                "hooks": [{"type": "command"}]  # No command key
+            }
+        ]
+
+        assert _hook_exists(hooks_list, "waiting-notify-permission.sh") is False

@@ -73,6 +73,28 @@ def get_hook_paths() -> dict[str, Path]:
     }
 
 
+def _hook_exists(hooks_list: list, hook_filename: str) -> bool:
+    """
+    Check if a specific hook script is registered in a hooks list.
+
+    Args:
+        hooks_list: List of hook configurations
+        hook_filename: Filename to search for (e.g., "waiting-notify-permission.sh")
+
+    Returns:
+        bool: True if hook is registered with matcher="*", False otherwise
+    """
+    return any(
+        hook.get("matcher") == "*"
+        and any(
+            h.get("command", "").endswith(hook_filename)
+            for h in hook.get("hooks", [])
+        )
+        for hook in hooks_list
+        if isinstance(hook, dict)
+    )
+
+
 def merge_hooks_into_settings(settings: dict) -> dict:
     """
     Add Waiting hooks to settings without overwriting existing hooks.
@@ -100,15 +122,7 @@ def merge_hooks_into_settings(settings: dict) -> dict:
 
     # Check if Waiting hook already registered
     perm_request_hooks = settings["hooks"]["PermissionRequest"]
-    waiting_hook_exists = any(
-        hook.get("matcher") == "*"
-        and any(
-            h.get("command", "").endswith(f"{HOOK_NAME_PERMISSION}.sh")
-            for h in hook.get("hooks", [])
-        )
-        for hook in perm_request_hooks
-        if isinstance(hook, dict)
-    )
+    waiting_hook_exists = _hook_exists(perm_request_hooks, f"{HOOK_NAME_PERMISSION}.sh")
 
     if not waiting_hook_exists:
         perm_request_hooks.append(
@@ -128,15 +142,7 @@ def merge_hooks_into_settings(settings: dict) -> dict:
         settings["hooks"]["PreToolUse"] = []
 
     pre_tool_use_hooks = settings["hooks"]["PreToolUse"]
-    activity_hook_exists = any(
-        hook.get("matcher") == "*"
-        and any(
-            h.get("command", "").endswith(f"{HOOK_NAME_ACTIVITY}.sh")
-            for h in hook.get("hooks", [])
-        )
-        for hook in pre_tool_use_hooks
-        if isinstance(hook, dict)
-    )
+    activity_hook_exists = _hook_exists(pre_tool_use_hooks, f"{HOOK_NAME_ACTIVITY}.sh")
 
     if not activity_hook_exists:
         pre_tool_use_hooks.append(

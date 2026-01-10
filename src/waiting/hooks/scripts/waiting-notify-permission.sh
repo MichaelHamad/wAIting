@@ -11,8 +11,17 @@ HOOK_JSON=$(cat)
 # Extract session_id from hook JSON input
 SESSION_ID=$(echo "$HOOK_JSON" | jq -r '.session_id // empty' 2>/dev/null || echo "")
 
-# Fallback: generate MD5 session ID if not provided
-if [ -z "$SESSION_ID" ]; then
+# Validate session ID (alphanumeric, hyphens, underscores only, max 128 chars)
+validate_session_id() {
+    local id="$1"
+    if [[ "$id" =~ ^[a-zA-Z0-9_-]+$ ]] && [ ${#id} -le 128 ]; then
+        return 0
+    fi
+    return 1
+}
+
+# Validate or regenerate session ID
+if [ -z "$SESSION_ID" ] || ! validate_session_id "$SESSION_ID"; then
     SESSION_ID=$(echo "$(hostname)-$(date +%s%N)" | md5sum | cut -d' ' -f1)
 fi
 
@@ -59,7 +68,7 @@ echo "[$(date '+%Y-%m-%d %H:%M:%S')] PermissionRequest - Session: $SESSION_ID, G
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] Grace period expired - Playing audio. Session: $SESSION_ID" >> "$LOG_FILE"
 
     # Call Python audio player (returns PID via stdout)
-    AUDIO_PID=$("$PYTHON_PATH" -m waiting.audio.play "$AUDIO_FILE" "$VOLUME" 2>> "$LOG_FILE" || echo "")
+    AUDIO_PID=$(python3 -m waiting.audio "$AUDIO_FILE" "$VOLUME" 2>> "$LOG_FILE" || echo "")
 
     # Store PID if available
     if [ -n "$AUDIO_PID" ]; then

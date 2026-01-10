@@ -264,3 +264,87 @@ class TestCleanupOldFiles:
         """Should not fail if no waiting files exist."""
         # Should not raise
         cleanup_old_files(age_hours=1)
+
+
+class TestSessionIdValidation:
+    """Tests for session ID validation in generate_session_id."""
+
+    def test_valid_alphanumeric_session_id(self):
+        """Should accept alphanumeric session IDs."""
+        hook_input = {"session_id": "abc123XYZ"}
+        session_id = generate_session_id(hook_input)
+        assert session_id == "abc123XYZ"
+
+    def test_valid_session_id_with_hyphens(self):
+        """Should accept session IDs with hyphens."""
+        hook_input = {"session_id": "session-123-abc"}
+        session_id = generate_session_id(hook_input)
+        assert session_id == "session-123-abc"
+
+    def test_valid_session_id_with_underscores(self):
+        """Should accept session IDs with underscores."""
+        hook_input = {"session_id": "session_123_abc"}
+        session_id = generate_session_id(hook_input)
+        assert session_id == "session_123_abc"
+
+    def test_rejects_path_traversal_attempt(self):
+        """Should reject session IDs with path traversal."""
+        hook_input = {"session_id": "../../../etc/passwd"}
+        session_id = generate_session_id(hook_input)
+        # Should generate fallback, not use malicious input
+        assert session_id != "../../../etc/passwd"
+        assert ".." not in session_id
+        assert "/" not in session_id
+
+    def test_rejects_session_id_with_slashes(self):
+        """Should reject session IDs containing slashes."""
+        hook_input = {"session_id": "test/session"}
+        session_id = generate_session_id(hook_input)
+        assert "/" not in session_id
+        # Should be a fallback MD5 hash
+        assert len(session_id) == 32
+
+    def test_rejects_session_id_with_spaces(self):
+        """Should reject session IDs containing spaces."""
+        hook_input = {"session_id": "test session"}
+        session_id = generate_session_id(hook_input)
+        assert " " not in session_id
+        assert len(session_id) == 32
+
+    def test_rejects_session_id_with_special_chars(self):
+        """Should reject session IDs with special characters."""
+        hook_input = {"session_id": "test;rm -rf /"}
+        session_id = generate_session_id(hook_input)
+        assert ";" not in session_id
+        assert session_id != "test;rm -rf /"
+        assert len(session_id) == 32
+
+    def test_rejects_session_id_with_backslash(self):
+        """Should reject session IDs containing backslashes."""
+        hook_input = {"session_id": "test\\session"}
+        session_id = generate_session_id(hook_input)
+        assert "\\" not in session_id
+        assert len(session_id) == 32
+
+    def test_rejects_session_id_exceeding_max_length(self):
+        """Should reject session IDs exceeding max length."""
+        long_id = "a" * 200
+        hook_input = {"session_id": long_id}
+        session_id = generate_session_id(hook_input)
+        # Should generate fallback since input too long
+        assert session_id != long_id
+        assert len(session_id) == 32
+
+    def test_accepts_session_id_at_max_length(self):
+        """Should accept session IDs at exactly max length (128)."""
+        valid_id = "a" * 128
+        hook_input = {"session_id": valid_id}
+        session_id = generate_session_id(hook_input)
+        assert session_id == valid_id
+
+    def test_rejects_null_bytes(self):
+        """Should reject session IDs containing null bytes."""
+        hook_input = {"session_id": "test\x00session"}
+        session_id = generate_session_id(hook_input)
+        assert "\x00" not in session_id
+        assert len(session_id) == 32

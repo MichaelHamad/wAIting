@@ -1,27 +1,48 @@
 """State management using temporary files for session tracking."""
 
 import hashlib
-import json
-import os
+import re
 from pathlib import Path
+
+
+# Valid session ID pattern: alphanumeric, hyphens, underscores only
+VALID_SESSION_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_-]+$")
+
+
+def _is_valid_session_id(session_id: str) -> bool:
+    """
+    Validate session ID for safe file path usage.
+
+    Args:
+        session_id: Session ID to validate
+
+    Returns:
+        bool: True if session ID is safe, False otherwise
+    """
+    if not session_id:
+        return False
+    # Max length to prevent filesystem issues
+    if len(session_id) > 128:
+        return False
+    return bool(VALID_SESSION_ID_PATTERN.match(session_id))
 
 
 def generate_session_id(hook_input: dict | None = None) -> str:
     """
     Generate a unique session ID.
 
-    If hook_input contains a session_id field, use it.
+    If hook_input contains a valid session_id field, use it.
     Otherwise, generate one from hostname + timestamp.
 
     Args:
         hook_input: Hook input JSON (optional)
 
     Returns:
-        str: Unique session ID
+        str: Unique session ID (guaranteed safe for file paths)
     """
     if hook_input and isinstance(hook_input, dict):
         session_id = hook_input.get("session_id")
-        if session_id and isinstance(session_id, str):
+        if session_id and isinstance(session_id, str) and _is_valid_session_id(session_id):
             return session_id
 
     # Fallback: MD5 hash of hostname + timestamp

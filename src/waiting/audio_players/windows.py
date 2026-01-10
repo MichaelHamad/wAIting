@@ -1,7 +1,32 @@
 """Windows and WSL audio player implementation."""
 
+import re
 import subprocess
 from shutil import which
+
+
+# Characters that could enable PowerShell injection
+UNSAFE_PATH_CHARS = re.compile(r"[';`$\(\)\{\}]")
+
+
+def _validate_file_path(file_path: str) -> None:
+    """
+    Validate file path for PowerShell safety.
+
+    Args:
+        file_path: Path to validate
+
+    Raises:
+        ValueError: If path contains potentially dangerous characters
+    """
+    if file_path == "default":
+        return  # "default" is a safe sentinel value
+
+    if UNSAFE_PATH_CHARS.search(file_path):
+        raise ValueError(
+            f"Invalid characters in file path: {file_path}. "
+            "Path cannot contain: ' ; ` $ ( ) { }"
+        )
 
 
 class PowerShellPlayer:
@@ -19,8 +44,11 @@ class PowerShellPlayer:
             int: Process ID
 
         Raises:
+            ValueError: If file_path contains unsafe characters
             Exception: If playback fails
         """
+        _validate_file_path(file_path)
+
         # Convert volume 1-100 to 0.0-1.0 scale
         ps_volume = volume / 100.0
 
