@@ -98,14 +98,14 @@ class TestResolveAudioFile:
             # Should attempt to find system sound or return "default"
             assert result is not None
 
-    def test_resolve_default_returns_default_if_not_found(self):
-        """Should return 'default' if no system sound found."""
-        with patch("waiting.audio.Path") as mock_path:
-            mock_path_instance = Mock()
-            mock_path_instance.exists.return_value = False
-            mock_path.return_value = mock_path_instance
+    def test_resolve_default_fallback_when_bundled_unavailable(self):
+        """Should return 'default' if bundled sound is not accessible."""
+        with patch("waiting.audio.files") as mock_files:
+            # Simulate bundled sound being unavailable
+            mock_files.side_effect = Exception("Resource not found")
 
             result = resolve_audio_file("default")
+            # Should return "default" string as emergency fallback
             assert result == "default"
 
     def test_resolve_custom_file_exists(self, tmp_path):
@@ -390,3 +390,28 @@ class TestResolveAudioFileEdgeCases:
                 kill_audio(12345)
 
                 mock_setup.assert_called_once()
+
+
+class TestBundledSound:
+    """Tests for bundled default sound file."""
+
+    def test_bundled_sound_exists(self):
+        """Bundled sound file should exist in package."""
+        from importlib.resources import files
+        resource = files("waiting.assets").joinpath("Cool_bell_final.wav")
+        assert resource.is_file(), "Bundled sound file missing from package"
+
+    def test_resolve_default_uses_bundled_sound(self):
+        """resolve_audio_file('default') should return bundled sound."""
+        result = resolve_audio_file("default")
+        assert result != "default", "Should return file path, not 'default' string"
+        assert Path(result).exists(), "Bundled sound file should exist"
+        assert "Cool_bell_final.wav" in str(result), "Should use bundled sound"
+
+    def test_bundled_sound_is_valid_wav(self):
+        """Bundled sound should be a valid WAV file."""
+        result = resolve_audio_file("default")
+        assert Path(result).suffix.lower() in [".wav", ".wave"]
+        assert Path(result).stat().st_size > 0, "Sound file should not be empty"
+        # Verify it's at least a reasonable size (> 100KB for a WAV file)
+        assert Path(result).stat().st_size > 100000, "Sound file seems too small"

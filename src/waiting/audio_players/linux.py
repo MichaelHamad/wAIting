@@ -124,8 +124,13 @@ class ALSAPlayer:
         """
         cmd = ["aplay"]
 
-        if file_path != "default":
-            cmd.append(file_path)
+        if file_path == "default":
+            # ALSA requires a file path; this should not happen with bundled sound
+            # but handle gracefully as defensive programming
+            from ..errors import AudioError
+            raise AudioError("ALSA player requires a file path, cannot use 'default' string")
+
+        cmd.append(file_path)
 
         # aplay volume control via -v flag (0-100)
         cmd.extend(["-v", str(volume)])

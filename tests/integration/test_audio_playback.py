@@ -199,6 +199,57 @@ class TestAudioPlayerFallback:
                 assert result is True
 
 
+class TestBundledSoundIntegration:
+    """Integration tests for bundled default sound."""
+
+    def test_bundled_sound_playback_with_default_config(self):
+        """Should play bundled sound when using default audio config."""
+        with patch("waiting.audio.get_audio_player") as mock_get_player:
+            mock_player = Mock(spec=AudioPlayer)
+            mock_player.play.return_value = 12345
+            mock_player.name.return_value = "TestPlayer"
+            mock_get_player.return_value = mock_player
+
+            # Don't mock resolve_audio_file - test actual resolution
+            pid = play_audio("default", 100)
+
+            # Verify player.play() was called with real bundled file path
+            call_args = mock_player.play.call_args[0]
+            file_arg = call_args[0]
+            assert "Cool_bell_final.wav" in str(file_arg), f"Expected bundled sound, got {file_arg}"
+            assert Path(file_arg).exists(), f"Sound file should exist: {file_arg}"
+            assert pid == 12345
+
+    def test_bundled_sound_volume_respected(self):
+        """Should pass volume correctly to player when using bundled sound."""
+        with patch("waiting.audio.get_audio_player") as mock_get_player:
+            mock_player = Mock(spec=AudioPlayer)
+            mock_player.play.return_value = 12345
+            mock_player.name.return_value = "TestPlayer"
+            mock_get_player.return_value = mock_player
+
+            pid = play_audio("default", 75)
+
+            # Verify volume was passed correctly
+            call_args = mock_player.play.call_args[0]
+            volume_arg = call_args[1]
+            assert volume_arg == 75
+
+    def test_bundled_sound_is_accessible_at_runtime(self):
+        """Bundled sound should be accessible at runtime via importlib.resources."""
+        from importlib.resources import files
+
+        resource = files("waiting.assets").joinpath("Cool_bell_final.wav")
+        assert resource.is_file(), "Bundled sound should be accessible"
+
+        # Should be able to read the resource
+        with resource.open("rb") as f:
+            data = f.read()
+            assert len(data) > 0, "Sound file should have content"
+            # WAV files start with RIFF header
+            assert data[:4] == b"RIFF", "Should be a valid WAV file"
+
+
 class TestAudioCLIInterface:
     """Tests for audio CLI interface."""
 

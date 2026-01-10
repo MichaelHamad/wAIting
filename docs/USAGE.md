@@ -199,29 +199,29 @@ The volume level for the bell notification.
 **Default:** `"default"`
 **Values:** `"default"` or path to audio file
 
-The audio file to play for notifications. Use `"default"` for system sounds or specify a path to a custom audio file.
+The audio file to play for notifications.
 
-**Default Behavior:**
-Waiting looks for system notification sounds in order of preference:
-1. `/usr/share/sounds/freedesktop/stereo/complete.oga` (Linux)
-2. `/usr/share/sounds/freedesktop/stereo/bell.oga` (Linux)
-3. `/System/Library/Sounds/Glass.aiff` (macOS)
-4. `C:\Windows\Media\notify.wav` (Windows/WSL)
-
-If no system sound is found, falls back to platform-specific default.
+**Bundled Sound (Recommended):**
+When set to `"default"`, Waiting plays the built-in notification sound (`Cool_bell_final.wav`) that is included with every installation. This provides:
+- ✅ Works on all platforms (Linux, macOS, Windows/WSL) without additional setup
+- ✅ Consistent notification sound across all installations
+- ✅ No dependency on system sounds being available
 
 **Custom Audio Files:**
+You can use your own audio file by specifying a path:
 ```json
-{ "audio": "~/Music/bell.wav" }
-{ "audio": "/usr/share/sounds/my-bell.ogg" }
-{ "audio": "C:\\Users\\User\\notification.wav" }
+{ "audio": "~/Music/my-bell.wav" }
+{ "audio": "/usr/share/sounds/notification.ogg" }
+{ "audio": "C:\\Users\\User\\bell.wav" }
 ```
 
 **Supported Formats:**
-- WAV (all platforms)
+- WAV (all platforms) - **Recommended**
 - OGG/FLAC (Linux with appropriate backend)
 - AIFF (macOS)
 - MP3 (depends on platform)
+
+**Note:** Custom audio files must exist and be readable. If a custom file is not found, Waiting will log an error.
 
 ## Configuration Examples
 

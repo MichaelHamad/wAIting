@@ -3,6 +3,7 @@
 import logging
 import platform
 import sys
+from importlib.resources import files
 from pathlib import Path
 
 from .errors import AudioError
@@ -75,6 +76,8 @@ def resolve_audio_file(audio_config: str) -> Path | str:
     """
     Resolve audio file path from configuration.
 
+    Prioritizes bundled sound file for "default" audio config.
+
     Args:
         audio_config: Audio path or "default"
 
@@ -85,19 +88,16 @@ def resolve_audio_file(audio_config: str) -> Path | str:
         AudioError: If custom file not found
     """
     if audio_config == "default":
-        # Try to find system bell sounds
-        candidates = [
-            Path("/usr/share/sounds/freedesktop/stereo/complete.oga"),
-            Path("/usr/share/sounds/freedesktop/stereo/bell.oga"),
-            Path("/System/Library/Sounds/Glass.aiff"),  # macOS
-            Path("C:\\Windows\\Media\\notify.wav"),  # Windows
-        ]
+        # FIRST PRIORITY: Try bundled sound file
+        try:
+            resource_path = files("waiting.assets").joinpath("Cool_bell_final.wav")
+            if resource_path.is_file():
+                return Path(str(resource_path))
+        except Exception:
+            pass  # Continue to fallback
 
-        for path in candidates:
-            if path.exists():
-                return path
-
-        # If no system sound found, use "default" which platform player handles
+        # FALLBACK: If bundled sound fails, return "default" string
+        # Platform players will handle with system beep/bell
         return "default"
 
     # Custom audio file path

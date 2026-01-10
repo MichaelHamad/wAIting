@@ -61,15 +61,21 @@ waiting --help       # Show help message
 
 ## Configuration
 
-Edit `~/.waiting.json` to customize:
+Waiting comes with a built-in notification sound that works on all platforms. You can customize behavior by editing `~/.waiting.json`:
 
 ```json
 {
-  "grace_period": 30,  # Wait this many seconds before bell
-  "volume": 100,       # Bell volume (1-100%)
-  "audio": "default"   # "default" or path to audio file
+  "grace_period": 30,     // Wait this many seconds before notification
+  "volume": 100,          // Volume level (1-100%)
+  "audio": "default"      // Use bundled sound (recommended)
 }
 ```
+
+**Audio options:**
+- `"default"` - Use the included notification sound (recommended - works everywhere)
+- `"/path/to/sound.wav"` - Use a custom audio file
+
+The bundled `Cool_bell_final.wav` notification sound is included with every installation and works on Linux, macOS, and Windows without any additional setup.
 
 See [USAGE Guide](./docs/USAGE.md) for detailed configuration options and examples.
 

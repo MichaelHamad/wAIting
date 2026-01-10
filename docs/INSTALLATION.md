@@ -10,9 +10,12 @@
 
 ### Audio System Requirements
 
-Audio playback requires platform-specific tools that are typically pre-installed:
+**Good news:** Waiting includes a bundled notification sound, so no additional audio packages are required to get started!
 
-#### Linux
+If you want to use custom audio files, you may need platform-specific audio tools (typically pre-installed):
+
+#### Linux (Optional - for custom audio)
+Waiting works with these audio systems:
 - **PulseAudio**: `paplay` command (Ubuntu, Debian, Fedora default)
 - **PipeWire**: `pw-play` command (newer systems)
 - **ALSA**: `aplay` command (fallback for minimal systems)
@@ -24,10 +27,10 @@ which pw-play   # PipeWire
 which aplay     # ALSA
 ```
 
-#### macOS
+#### macOS (Optional - for custom audio)
 - **AFPlay**: Built-in (no installation needed)
 
-#### Windows (WSL)
+#### Windows/WSL (Optional - for custom audio)
 - **PowerShell**: Built-in Windows component
 
 ## Installation Steps
