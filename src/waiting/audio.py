@@ -1,0 +1,194 @@
+"""Audio playback interface with platform detection."""
+
+import logging
+import platform
+import sys
+from pathlib import Path
+
+from .errors import AudioError
+from .audio_players.base import AudioPlayer
+
+
+def get_audio_player() -> AudioPlayer:
+    """
+    Auto-detect and return appropriate audio player for platform.
+
+    Returns:
+        AudioPlayer: Platform-specific audio player
+
+    Raises:
+        AudioError: If no suitable player found
+    """
+    system = platform.system()
+
+    if system == "Linux":
+        from .audio_players.linux import get_linux_player
+
+        try:
+            return get_linux_player()
+        except Exception as e:
+            raise AudioError(f"No Linux audio player available: {e}")
+
+    elif system == "Darwin":  # macOS
+        from .audio_players.macos import AFPlayPlayer
+
+        player = AFPlayPlayer()
+        if not player.available():
+            raise AudioError("AFPlay not available on macOS")
+        return player
+
+    elif system == "Windows":
+        from .audio_players.windows import PowerShellPlayer
+
+        player = PowerShellPlayer()
+        if not player.available():
+            raise AudioError("PowerShell not available on Windows")
+        return player
+
+    else:
+        raise AudioError(f"Unsupported platform: {system}")
+
+
+def resolve_audio_file(audio_config: str) -> Path | str:
+    """
+    Resolve audio file path from configuration.
+
+    Args:
+        audio_config: Audio path or "default"
+
+    Returns:
+        Path | str: Resolved audio file path or "default"
+
+    Raises:
+        AudioError: If custom file not found
+    """
+    if audio_config == "default":
+        # Try to find system bell sounds
+        candidates = [
+            Path("/usr/share/sounds/freedesktop/stereo/complete.oga"),
+            Path("/usr/share/sounds/freedesktop/stereo/bell.oga"),
+            Path("/System/Library/Sounds/Glass.aiff"),  # macOS
+            Path("C:\\Windows\\Media\\notify.wav"),  # Windows
+        ]
+
+        for path in candidates:
+            if path.exists():
+                return path
+
+        # If no system sound found, use "default" which platform player handles
+        return "default"
+
+    # Custom audio file path
+    audio_path = Path(audio_config).expanduser()
+
+    if not audio_path.exists():
+        raise AudioError(f"Audio file not found: {audio_config}")
+
+    return audio_path
+
+
+def play_audio(file_path: str, volume: int, logger: logging.Logger | None = None) -> int:
+    """
+    Play audio file and return process ID.
+
+    Args:
+        file_path: Path to audio file or "default"
+        volume: Volume 1-100
+        logger: Optional logger instance
+
+    Returns:
+        int: Process ID of audio player
+
+    Raises:
+        AudioError: If playback fails
+    """
+    if logger is None:
+        from .logging import setup_logging
+
+        logger = setup_logging()
+
+    try:
+        player = get_audio_player()
+        resolved_path = resolve_audio_file(file_path)
+        pid = player.play(str(resolved_path), volume)
+
+        logger.info(
+            f"Audio playing with PID {pid} using {player.name()} "
+            f"(file: {file_path}, volume: {volume}%)"
+        )
+        return pid
+
+    except Exception as e:
+        logger.error(f"Audio playback failed: {e}")
+        raise AudioError(str(e)) from e
+
+
+def kill_audio(pid: int, logger: logging.Logger | None = None) -> bool:
+    """
+    Kill audio process by PID.
+
+    Args:
+        pid: Process ID to kill
+        logger: Optional logger instance
+
+    Returns:
+        bool: True if killed, False if already gone
+
+    Raises:
+        AudioError: If kill fails
+    """
+    if logger is None:
+        from .logging import setup_logging
+
+        logger = setup_logging()
+
+    try:
+        player = get_audio_player()
+        result = player.kill(pid)
+
+        if result:
+            logger.info(f"Killed audio process PID {pid}")
+        else:
+            logger.warning(f"Audio process PID {pid} already gone")
+
+        return result
+
+    except Exception as e:
+        logger.warning(f"Failed to kill audio process: {e}")
+        # Try OS-level kill as fallback
+        import subprocess
+
+        try:
+            subprocess.run(["kill", str(pid)], check=False)
+            logger.info(f"Force killed audio process PID {pid}")
+            return True
+        except Exception:
+            return False
+
+
+# CLI entry point for hook scripts
+if __name__ == "__main__":
+    """
+    Command-line interface for audio playback.
+    Used by hook scripts to play audio.
+
+    Usage: python -m waiting.audio <file_path> <volume>
+    """
+    if len(sys.argv) < 3:
+        print("Usage: python -m waiting.audio <file_path> <volume>", file=sys.stderr)
+        sys.exit(1)
+
+    file_path = sys.argv[1]
+    volume = int(sys.argv[2])
+
+    from .logging import setup_logging
+
+    logger = setup_logging()
+
+    try:
+        pid = play_audio(file_path, volume, logger)
+        print(pid)
+        sys.exit(0)
+    except AudioError as e:
+        logger.error(f"Audio playback failed: {e}")
+        sys.exit(1)
