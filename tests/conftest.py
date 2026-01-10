@@ -7,6 +7,15 @@ from pathlib import Path
 
 import pytest
 
+# Clear audio player cache before each test to avoid cache pollution
+@pytest.fixture(autouse=True)
+def _clear_audio_cache():
+    """Clear audio player cache before each test."""
+    from waiting.audio import _clear_audio_player_cache
+    _clear_audio_player_cache()
+    yield
+    _clear_audio_player_cache()
+
 
 @pytest.fixture
 def tmp_home(tmp_path, monkeypatch):

@@ -23,19 +23,29 @@ def get_audio_player() -> AudioPlayer:
     """
     Auto-detect and return appropriate audio player for platform.
 
+    Caches player instance to avoid repeated initialization overhead.
+
     Returns:
         AudioPlayer: Platform-specific audio player
 
     Raises:
         AudioError: If no suitable player found
     """
+    global _audio_player_cache
+
+    # Return cached player if available
+    if _audio_player_cache is not None:
+        return _audio_player_cache
+
     system = platform.system()
 
     if system == "Linux":
         from .audio_players.linux import get_linux_player
 
         try:
-            return get_linux_player()
+            player = get_linux_player()
+            _audio_player_cache = player
+            return player
         except Exception as e:
             raise AudioError(f"No Linux audio player available: {e}")
 
@@ -45,6 +55,7 @@ def get_audio_player() -> AudioPlayer:
         player = AFPlayPlayer()
         if not player.available():
             raise AudioError("AFPlay not available on macOS")
+        _audio_player_cache = player
         return player
 
     elif system == "Windows":
@@ -53,6 +64,7 @@ def get_audio_player() -> AudioPlayer:
         player = PowerShellPlayer()
         if not player.available():
             raise AudioError("PowerShell not available on Windows")
+        _audio_player_cache = player
         return player
 
     else:
